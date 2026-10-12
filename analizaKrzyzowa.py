@@ -406,7 +406,7 @@ def raport_per_numer(r, outdir):
 
 def main():
     ap = argparse.ArgumentParser(description="Analiza krzyzowa bilingow (multi-operator)")
-    ap.add_argument("--dane", help="katalog glowny ze struktura <operator>/<abonent>/")
+    ap.add_argument("--dane", default="./input", help="katalog glowny ze struktura <operator>/<abonent>/ (domyslnie: ./input)")
     ap.add_argument("--outdir", default="./raport_krzyzowy")
     ap.add_argument("--bez-per-numer", action="store_true", help="pomin klasyczne raporty per numer")
     args = ap.parse_args()
