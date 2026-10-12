@@ -38,7 +38,7 @@ OPERATORZY = {
     "tmobile": {"nazwa": "T-Mobile Polska", "autodetect": tmobile.autodetect,
                 "parse": tmobile.parse, "parse_nazwiska": tmobile.parse_nazwiska, "parse_bts": tmobile.parse_bts},
     "plus":    {"nazwa": "Plus (Polkomtel)", "autodetect": plus.autodetect,
-                "parse": plus.parse, "parse_nazwiska": plus.parse_nazwiska, "parse_bts": plus.parse_bts},
+                "parse": plus.parse_plus, "parse_nazwiska": plus.parse_nazwiska, "parse_bts": plus.parse_bts},
     "play":    {"nazwa": "Play (P4)",        "autodetect": play.autodetect,
                 "parse": play.parse, "parse_nazwiska": play.parse_nazwiska, "parse_bts": play.parse_bts},
 }
@@ -731,6 +731,28 @@ def main():
         return
 
     print("=== Analiza bilingow — toolkit ===")
+
+    # Auto-skan ./input — jesli sa tam dane, nie pytamy o sciezki
+    if os.path.isdir("./input"):
+        from common import skanuj_dane
+        pozycje = skanuj_dane("./input", verbose=False)
+        pozycje = [p for p in pozycje if p["abonent"] != "README.txt"]
+        if pozycje:
+            print(f"\n[+] Wykryto dane w ./input: {len(pozycje)} folderow abonentow.")
+            for p in pozycje[:20]:
+                print(f"    - {p['operator']}/{p['abonent']}")
+            if len(pozycje) > 20:
+                print(f"    ... i {len(pozycje)-20} kolejnych")
+            while True:
+                odp = input("\nAnalizowac wszystkich (analiza krzyzowa)? [t/n]: ").strip().lower()
+                if odp in ("t", "tak", "y", "yes"):
+                    import analizaKrzyzowa
+                    analizaKrzyzowa.przebieg("./input", "./raport_krzyzowy")
+                    return
+                if odp in ("n", "nie", ""):
+                    break
+                print("  Wpisz 't' lub 'n'.")
+
     operator_key = args.operator or wybierz_operatora_interaktywnie()
 
     plik = args.plik

@@ -1,7 +1,7 @@
 # Biling Toolkit — analiza bilingow multi-operator
-WERSJA: 2026-10-12 11:12
+WERSJA: 2026-10-12 1205
 
-## CO JEST ZROBIONE (stan na 2026-10-12 11:12)
+## CO JEST ZROBIONE (stan na 2026-10-12 1200)
 
 ### Architektura
 - [x] Kanoniczny format danych (kolumny jak w Orange: data, czas, czas_trwania, typ, strona_a/b, bts_a/b, imei_a/b, imsi_a/b)
@@ -18,9 +18,10 @@ WERSJA: 2026-10-12 11:12
 
 ### Parsery operatorow
 - [x] ORANGE (PDF) — pelny: wykaz polaczen, dane osobowe (z historia zmian), BTS
-- [~] PLUS (Polkomtel) — Excel .xls/.xlsx, naglowek w wierszu 5; parser wykazu zrobiony
-       (kolumny: poczatek, koniec, parametr, a/b msisdn, a/b bts address; typ domyslnie VOICE;
-       IMEI/IMSI puste). DO POTWIERDZENIA na realnych danych.
+- [x] PLUS (Polkomtel) — Excel .xls/.xlsx; autodetekcja realnych nazw z systemu Polkomtel
+       (*-wyniki-<token>-wykaz_polaczen-*.xls / dane_abonenckie / transmisja_danych);
+       pliki grupowane po numerze (token) w jednym folderze; transmisja danych laczona
+       jako zdarzenia DATA. DO POTWIERDZENIA na realnych danych.
 - [ ] T-MOBILE — szkielet (autodetekcja plikow), parser do napisania
 - [ ] PLAY — szkielet (autodetekcja plikow), parser do napisania
 
@@ -54,8 +55,9 @@ Skrypt sam wykrywa operatora po nazwie folderu pierwszego poziomu — NIE trzeba
     # analiza krzyzowa wszystkich abonentow z input/ (raporty per numer + raport zbiorczy):
     python3 analizaKrzyzowa.py --dane input --outdir raport_krzyzowy
 
-    # tryb interaktywny:
+    # OBA skrypty sam skanuja ./input — wystarczy uruchomic bez argumentow:
     python3 analizaKrzyzowa.py
+    python3 analizaBilling.py        # wykryje dane w ./input i zapyta o analize krzyzowa
 
     # pojedynczy numer / pojedynczy folder (tryb klasyczny):
     python3 analizaBilling.py --folder input/orange/<abonent>
@@ -63,5 +65,6 @@ Skrypt sam wykrywa operatora po nazwie folderu pierwszego poziomu — NIE trzeba
 Wymagania: python3, pandas, pdftotext (sudo apt install poppler-utils), xlrd (dla .xls), openpyxl (dla .xlsx).
 
 ## HISTORIA ZMIAN
-- 2026-10-12 11:12 — v2: struktura input/, parser Plus (Excel), analiza krzyzowa, README, wersjonowanie
+- 2026-10-12 1200 — v2: struktura input/, parser Plus (Excel), analiza krzyzowa, README, wersjonowanie
+- 2026-10-12 1205 — auto-skan ./input w obu skryptach, autodetekcja realnych nazw plikow Plusa (grupowanie po numerze), datasets()
 - wczesniej  — v1: tylko Orange, tryb pojedynczego numeru

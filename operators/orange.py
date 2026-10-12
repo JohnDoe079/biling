@@ -86,6 +86,12 @@ def autodetect(folder: str):
     wykaz, nazwiska, bts = autodetect_pliki(folder)
     return {"wykaz": wykaz, "nazwiska": nazwiska, "bts": bts}
 
+def datasets(folder: str):
+    """Jeden zestaw na folder Orange."""
+    d = autodetect(folder)
+    return [{"token": None, "wykaz": d["wykaz"], "nazwiska": d["nazwiska"],
+             "transmisja": None, "bts": d["bts"]}]
+
 
 # ══════════════════════════════════════════════════════════════════════
 # DANE OSOBOWE / NAZWISKA  — TOKENOWY PARSER ZE SCALANIEM

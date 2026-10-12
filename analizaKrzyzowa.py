@@ -93,63 +93,78 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
         abonent = poz["abonent"]
 
         try:
-            pliki = info["modul"].autodetect(folder)
+            zestawy = info["modul"].datasets(folder)
         except Exception as e:
             print(f"[!] {operator}/{abonent}: blad autodetekcji: {e}")
             continue
 
-        if verbose:
-            print(f"\n[+] {operator}/{abonent}")
-            for rola, p in pliki.items():
-                if p:
-                    print(f"    {rola}: {os.path.basename(p)}")
+        for zi, zestaw in enumerate(zestawy, 1):
+            etykieta = abonent if len(zestawy) == 1 else f"{abonent} ({zestaw.get('token') or zi})"
+            if verbose and zestaw.get("wykaz"):
+                print(f"\n[+] {operator}/{etykieta}")
+                for rola in ("wykaz", "transmisja", "nazwiska", "bts"):
+                    if zestaw.get(rola):
+                        print(f"    {rola}: {os.path.basename(zestaw[rola])}")
 
-        if not pliki.get("wykaz"):
-            print(f"[!] {operator}/{abonent}: nie znaleziono pliku z wykazem polaczen — pominięto.")
-            continue
+            if not zestaw.get("wykaz"):
+                print(f"[!] {operator}/{etykieta}: brak pliku z polaczeniami — pominięto.")
+                continue
 
-        try:
-            df, msisdn = info["parse"](pliki["wykaz"], verbose=verbose)
-        except BrakParsaraError as e:
-            print(f"[!] {e}")
-            continue
-        except Exception as e:
-            print(f"[!] {operator}/{abonent}: blad parsowania wykazu: {e}")
-            continue
-
-        if df is None or df.empty:
-            print(f"[!] {operator}/{abonent}: brak sparsowanych rekordow.")
-            continue
-
-        numer = wykryj_numer_abonenta(df, msisdn, abonent)
-        nazwiska_map, historia = {}, {}
-        if pliki.get("nazwiska") and info.get("parse_nazwiska"):
+            ramki_df = []
             try:
-                nazwiska_map, historia = info["parse_nazwiska"](pliki["nazwiska"], verbose=False)
+                df, msisdn = info["parse"](zestaw["wykaz"], verbose=False)
+                ramki_df.append(df)
+            except BrakParsaraError as e:
+                print(f"[!] {e}")
+                continue
             except Exception as e:
-                print(f"    [!] blad parsowania danych osobowych: {e}")
-        bts_map = {}
-        if pliki.get("bts") and info.get("parse_bts"):
-            try:
-                bts_map = info["parse_bts"](pliki["bts"], verbose=False)
-            except Exception as e:
-                print(f"    [!] blad parsowania BTS: {e}")
+                print(f"[!] {operator}/{etykieta}: blad parsowania: {e}")
+                continue
 
-        od, do = okres_bilingow(df)
-        df = df.copy()
-        df["abonent"] = abonent
-        df["operator"] = operator
-        df["a_key"] = df["strona_a"].map(klucz_numer)
-        df["b_key"] = df["strona_b"].map(klucz_numer)
-        ramki.append(df)
+            if zestaw.get("transmisja") and info.get("parse"):
+                try:
+                    df_tr, _ = info["parse"](zestaw["transmisja"], verbose=False)
+                    if df_tr is not None and not df_tr.empty:
+                        df_tr = df_tr.copy()
+                        df_tr["typ"] = "DATA"
+                        ramki_df.append(df_tr)
+                except Exception:
+                    pass
 
-        rekordy.append({
-            "operator": operator, "abonent": abonent, "numer": numer,
-            "folder": folder, "df": df, "nazwiska_map": nazwiska_map,
-            "historia": historia, "bts_map": bts_map,
-            "okres_od": od, "okres_do": do,
-        })
-        print(f"    -> numer: {numer} | rekordow: {len(df)} | okres: {od} - {do}")
+            df = pd.concat(ramki_df, ignore_index=True) if ramki_df else pd.DataFrame()
+            if df.empty:
+                print(f"[!] {operator}/{etykieta}: brak sparsowanych rekordow.")
+                continue
+
+            numer = wykryj_numer_abonenta(df, msisdn, zestaw.get("token") or etykieta)
+            nazwiska_map, historia = {}, {}
+            if zestaw.get("nazwiska") and info.get("parse_nazwiska"):
+                try:
+                    nazwiska_map, historia = info["parse_nazwiska"](zestaw["nazwiska"], verbose=False)
+                except Exception as e:
+                    print(f"    [!] blad parsowania danych abonenckich: {e}")
+            bts_map = {}
+            if zestaw.get("bts") and info.get("parse_bts"):
+                try:
+                    bts_map = info["parse_bts"](zestaw["bts"], verbose=False)
+                except Exception as e:
+                    print(f"    [!] blad parsowania BTS: {e}")
+
+            od, do = okres_bilingow(df)
+            df = df.copy()
+            df["abonent"] = etykieta
+            df["operator"] = operator
+            df["a_key"] = df["strona_a"].map(klucz_numer)
+            df["b_key"] = df["strona_b"].map(klucz_numer)
+            ramki.append(df)
+
+            rekordy.append({
+                "operator": operator, "abonent": etykieta, "numer": numer,
+                "folder": folder, "df": df, "nazwiska_map": nazwiska_map,
+                "historia": historia, "bts_map": bts_map,
+                "okres_od": od, "okres_do": do,
+            })
+            print(f"    -> numer: {numer} | rekordow: {len(df)} | okres: {od} - {do}")
 
     global_df = pd.concat(ramki, ignore_index=True) if ramki else pd.DataFrame()
     return rekordy, global_df
@@ -404,16 +419,8 @@ def raport_per_numer(r, outdir):
 # MAIN
 # ══════════════════════════════════════════════════════════════════════
 
-def main():
-    ap = argparse.ArgumentParser(description="Analiza krzyzowa bilingow (multi-operator)")
-    ap.add_argument("--dane", default="./input", help="katalog glowny ze struktura <operator>/<abonent>/ (domyslnie: ./input)")
-    ap.add_argument("--outdir", default="./raport_krzyzowy")
-    ap.add_argument("--bez-per-numer", action="store_true", help="pomin klasyczne raporty per numer")
-    args = ap.parse_args()
-
-    root = args.dane
-    if not root:
-        root = input_path("Podaj sciezke do katalogu glownego z danymi (<operator>/<abonent>/): ").strip()
+def przebieg(root: str, outdir: str, bez_per_numer: bool = False):
+    """Pelny przebieg analizy krzyzowej (wywolywany z CLI i z analizaBilling)."""
     if not os.path.isdir(root):
         print(f"[!] Nie ma takiego katalogu: {root}")
         sys.exit(1)
@@ -423,13 +430,13 @@ def main():
         print("[!] Nie wczytano zadnych danych.")
         sys.exit(1)
 
-    os.makedirs(args.outdir, exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
 
-    if not args.bez_per_numer:
+    if not bez_per_numer:
         print("\n[+] Raporty per numer:")
         for r in rekordy:
             try:
-                raport_per_numer(r, args.outdir)
+                raport_per_numer(r, outdir)
             except Exception as e:
                 print(f"    [!] {r['abonent']}: blad raportu: {e}")
 
@@ -437,8 +444,8 @@ def main():
     wspolne = wspolne_kontakty(rekordy)
     imei_df = wspolne_imei(rekordy)
 
-    out_txt = os.path.join(args.outdir, "RAPORT_ZBIORCZY_KRZYZOWY.txt")
-    out_csv = os.path.join(args.outdir, "RAPORT_ZBIORCZY_KRZYZOWY.csv")
+    out_txt = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.txt")
+    out_csv = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.csv")
     generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, out_csv)
 
     print("\n" + "=" * 100)
@@ -451,6 +458,15 @@ def main():
     print("=" * 100)
     print(f"\n[+] RAPORT ZBIORCZY TXT: {os.path.abspath(out_txt)}")
     print(f"[+] RAPORT ZBIORCZY CSV: {os.path.abspath(out_csv)}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Analiza krzyzowa bilingow (multi-operator)")
+    ap.add_argument("--dane", default="./input", help="katalog glowny ze struktura <operator>/<abonent>/ (domyslnie: ./input)")
+    ap.add_argument("--outdir", default="./raport_krzyzowy")
+    ap.add_argument("--bez-per-numer", action="store_true", help="pomin klasyczne raporty per numer")
+    args = ap.parse_args()
+    przebieg(args.dane, args.outdir, args.bez_per_numer)
 
 
 if __name__ == "__main__":

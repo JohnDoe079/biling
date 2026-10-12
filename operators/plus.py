@@ -20,22 +20,58 @@ from operators.base import parser_niedosteppny  # parse_nazwiska/parse_bts jako 
 # ─────────────────────────────────────────────────────────────────────
 # AUTODETEKCJA PLIKOW W FOLDERZE ABONENTA
 # ─────────────────────────────────────────────────────────────────────
+# Realne nazwy z systemu Polkomtel:
+#   ...-wyniki-8275782-dane_abonenckie-2026-05-25-18-19-30.774.xls
+#   ...-wyniki-8275782-wykaz_polaczen-...xls
+#   ...-wyniki-8275782-transmisja_danych-...xls
+# Token "8275782" laczy pliki jednego numeru.
+
+_RE_PLIK = re.compile(
+    r"wyniki-(?P<token>\d+)-(?:(?:dane_)?)(?P<rola>wykaz_polaczen|dane_abonenckie|transmisja_danych)",
+    re.IGNORECASE)
 
 def autodetect(folder: str):
-    xls = sorted(glob.glob(os.path.join(folder, "*.xls*")))
-    pdfs = sorted(glob.glob(os.path.join(folder, "*.pdf")))
-    pliki = xls + pdfs
-    wykaz = None
-    pozostale = []
-    for p in pliki:
-        n = os.path.basename(p).lower()
-        if any(k in n for k in ("bts", "dane", "abonent", "nazw", "subscr", "personal")):
+    """Zgodnie ze starym interfejsem: zwraca pojedynczy zestaw (pierwszy napotkany)."""
+    ds = datasets(folder)
+    if not ds:
+        return {"wykaz": None, "nazwiska": None, "bts": None}
+    d0 = ds[0]
+    return {"wykaz": d0["wykaz"], "nazwiska": d0["nazwiska"], "bts": d0["bts"]}
+
+def datasets(folder: str):
+    """
+    Zwraca liste zestawow danych: [{token, wykaz, nazwiska, transmisja, bts}].
+    Jeden zestaw = jeden numer (token z nazwy pliku).
+    """
+    import glob
+    pliki = sorted(glob.glob(os.path.join(folder, "*.xls*")) +
+                   glob.glob(os.path.join(folder, "*.pdf")))
+    grupy = {}
+    inne = []
+    for f in pliki:
+        m = _RE_PLIK.search(os.path.basename(f))
+        if m:
+            g = grupy.setdefault(m.group("token"), {})
+            g[m.group("rola")] = f
+        else:
+            inne.append(f)
+    out = []
+    for token in sorted(grupy):
+        g = grupy[token]
+        if "wykaz_polaczen" not in g and "transmisja_danych" not in g:
             continue
-        pozostale.append(p)
-    if pozostale:
-        pozostale.sort(key=lambda p: os.path.getsize(p), reverse=True)
-        wykaz = pozostale[0]
-    return {"wykaz": wykaz, "nazwiska": None, "bts": None}
+        out.append({
+            "token": token,
+            "wykaz": g.get("wykaz_polaczen"),
+            "nazwiska": g.get("dane_abonenckie"),
+            "transmisja": g.get("transmisja_danych"),
+            "bts": None,
+        })
+    if not out and inne:
+        inne.sort(key=lambda p: os.path.getsize(p), reverse=True)
+        out.append({"token": None, "wykaz": inne[0], "nazwiska": None,
+                    "transmisja": inne[1] if len(inne) > 1 else None, "bts": None})
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────

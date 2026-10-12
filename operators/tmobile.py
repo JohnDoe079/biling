@@ -40,6 +40,11 @@ def autodetect(folder: str):
         wykaz = pozostale[0]
     return {"wykaz": wykaz, "nazwiska": nazwiska, "bts": bts}
 
+def datasets(folder: str):
+    d = autodetect(folder)
+    return [{"token": None, "wykaz": d["wykaz"], "nazwiska": d["nazwiska"],
+             "transmisja": None, "bts": d["bts"]}]
+
 
 # ─────────────────────────────────────────────────────────────────────
 # PARSERY — SKELETY
