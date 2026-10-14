@@ -38,7 +38,7 @@ OPERATORZY = {
     "tmobile": {"nazwa": "T-Mobile Polska", "autodetect": tmobile.autodetect,
                 "parse": tmobile.parse, "parse_nazwiska": tmobile.parse_nazwiska, "parse_bts": tmobile.parse_bts},
     "plus":    {"nazwa": "Plus (Polkomtel)", "autodetect": plus.autodetect,
-                "parse": plus.parse_plus, "parse_nazwiska": plus.parse_nazwiska, "parse_bts": plus.parse_bts},
+                "parse": plus.parse_plus, "parse_nazwiska": plus.parse_plus_nazwiska, "parse_bts": plus.parse_bts},
     "play":    {"nazwa": "Play (P4)",        "autodetect": play.autodetect,
                 "parse": play.parse, "parse_nazwiska": play.parse_nazwiska, "parse_bts": play.parse_bts},
 }

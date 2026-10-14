@@ -53,7 +53,7 @@ OPERATORZY = {
     },
     "tmobile": {"nazwa": "T-Mobile Polska", "modul": tmobile},
     "plus":    {"nazwa": "Plus (Polkomtel)", "modul": plus,
-            "parse": plus.parse_plus},
+            "parse": plus.parse_plus, "parse_nazwiska": plus.parse_plus_nazwiska},
     "play":    {"nazwa": "Play (P4)",        "modul": play},
 }
 
@@ -99,31 +99,34 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
             continue
 
         for zi, zestaw in enumerate(zestawy, 1):
-            etykieta = abonent if len(zestawy) == 1 else f"{abonent} ({zestaw.get('token') or zi})"
+            etykieta = abonent if len(zestawy) == 1 else f"{abonent} #{zi}"
             if verbose and zestaw.get("wykaz"):
                 print(f"\n[+] {operator}/{etykieta}")
                 for rola in ("wykaz", "transmisja", "nazwiska", "bts"):
                     if zestaw.get(rola):
                         print(f"    {rola}: {os.path.basename(zestaw[rola])}")
 
-            if not zestaw.get("wykaz"):
-                print(f"[!] {operator}/{etykieta}: brak pliku z polaczeniami — pominięto.")
+            if not zestaw.get("wykaz") and not zestaw.get("transmisja"):
+                print(f"[!] {operator}/{etykieta}: brak plikow z danymi — pominięto.")
                 continue
 
             ramki_df = []
-            try:
-                df, msisdn = info["parse"](zestaw["wykaz"], verbose=False)
-                ramki_df.append(df)
-            except BrakParsaraError as e:
-                print(f"[!] {e}")
-                continue
-            except Exception as e:
-                print(f"[!] {operator}/{etykieta}: blad parsowania: {e}")
-                continue
+            msisdn = None
+            if zestaw.get("wykaz"):
+                try:
+                    df, msisdn = info["parse"](zestaw["wykaz"], verbose=False)
+                    ramki_df.append(df)
+                except BrakParsaraError as e:
+                    print(f"[!] {e}")
+                    continue
+                except Exception as e:
+                    print(f"[!] {operator}/{etykieta}: blad parsowania: {e}")
+                    continue
 
             if zestaw.get("transmisja") and info.get("parse"):
                 try:
-                    df_tr, _ = info["parse"](zestaw["transmisja"], verbose=False)
+                    df_tr, ms_tr = info["parse"](zestaw["transmisja"], verbose=False)
+                    msisdn = msisdn or ms_tr
                     if df_tr is not None and not df_tr.empty:
                         df_tr = df_tr.copy()
                         df_tr["typ"] = "DATA"
@@ -132,11 +135,15 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
                     pass
 
             df = pd.concat(ramki_df, ignore_index=True) if ramki_df else pd.DataFrame()
-            if df.empty:
-                print(f"[!] {operator}/{etykieta}: brak sparsowanych rekordow.")
+            if df.empty and not msisdn:
+                print(f"[!] {operator}/{etykieta}: brak danych i brak numeru w naglowku — pominięto.")
                 continue
+            if df.empty:
+                df = pd.DataFrame(columns=[
+                    "data", "czas", "czas_trwania", "typ", "strona_a", "bts_a", "imei_a",
+                    "imsi_a", "strona_b", "bts_b", "imei_b", "imsi_b"])
 
-            numer = wykryj_numer_abonenta(df, msisdn, zestaw.get("token") or etykieta)
+            numer = klucz_numer(msisdn) if msisdn else wykryj_numer_abonenta(df, None, zestaw.get("token") or etykieta)
             nazwiska_map, historia = {}, {}
             if zestaw.get("nazwiska") and info.get("parse_nazwiska"):
                 try:
@@ -151,6 +158,8 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
                     print(f"    [!] blad parsowania BTS: {e}")
 
             od, do = okres_bilingow(df)
+            if len(zestawy) > 1 and numer:
+                etykieta = f"{abonent} ({numer})"
             df = df.copy()
             df["abonent"] = etykieta
             df["operator"] = operator
@@ -158,15 +167,60 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
             df["b_key"] = df["strona_b"].map(klucz_numer)
             ramki.append(df)
 
+            # KLUCZE IDENTYFIKACYJNE: 1) MSISDN (numer), 2) PESEL lub NIP/KRS.
+            # Imie/nazwa NIGDY nie sa kluczem (moga byc bledne/falszywe) — tylko wyswietlanie.
+            wpis_ab = nazwiska_map.get(numer) or (historia.get(numer, [{}])[-1] if historia.get(numer) else {}) or {}
+            identyfikator = (wpis_ab.get("pesel") or wpis_ab.get("nip") or
+                             wpis_ab.get("regon") or wpis_ab.get("krs") or "")
+
             rekordy.append({
                 "operator": operator, "abonent": etykieta, "numer": numer,
+                "identyfikator": identyfikator,
                 "folder": folder, "df": df, "nazwiska_map": nazwiska_map,
                 "historia": historia, "bts_map": bts_map,
                 "okres_od": od, "okres_do": do,
             })
             print(f"    -> numer: {numer} | rekordow: {len(df)} | okres: {od} - {do}")
 
-    global_df = pd.concat(ramki, ignore_index=True) if ramki else pd.DataFrame()
+    # SCALANIE po kluczu MSISDN — ten sam numer moze wystapic w wielu zestawach
+    # (rozne zapytania/systemy). Imie/nazwa nie jest kluczem i moze sie roznic.
+    scalone = {}
+    kolejnosc = []
+    for r in rekordy:
+        k = r["numer"] or f"_bez_numeru_{len(kolejnosc)}"
+        if k not in scalone:
+            r2 = dict(r)
+            r2["df"] = r["df"]
+            r2["nazwiska_map"] = dict(r["nazwiska_map"])
+            r2["historia"] = {n: list(w) for n, w in r["historia"].items()}
+            r2["bts_map"] = dict(r["bts_map"])
+            r2["zrodla"] = [r["abonent"]]
+            scalone[k] = r2
+            kolejnosc.append(k)
+        else:
+            r2 = scalone[k]
+            r2["df"] = pd.concat([r2["df"], r["df"]], ignore_index=True)
+            r2["nazwiska_map"].update(r["nazwiska_map"])
+            for n, w in r["historia"].items():
+                r2["historia"].setdefault(n, [])
+                for wpis in w:
+                    if wpis not in r2["historia"][n]:
+                        r2["historia"][n].append(wpis)
+            r2["bts_map"].update(r["bts_map"])
+            if r["identyfikator"] and not r2["identyfikator"]:
+                r2["identyfikator"] = r["identyfikator"]
+            r2["zrodla"].append(r["abonent"])
+    for k in kolejnosc:
+        r2 = scalone[k]
+        if len(r2["zrodla"]) > 1:
+            r2["abonent"] = r2["zrodla"][0]
+            print(f"    [scalono] {r2['numer']}: {len(r2['zrodla'])} zrodel -> {r2['abonent']}")
+    rekordy = [scalone[k] for k in kolejnosc]
+    for r in rekordy:
+        if not r["df"].empty:
+            r["okres_od"], r["okres_do"] = okres_bilingow(r["df"])
+
+    global_df = pd.concat([r["df"] for r in rekordy], ignore_index=True) if rekordy else pd.DataFrame()
     return rekordy, global_df
 
 
@@ -195,9 +249,13 @@ def komunikacja_bezposrednia(rekordy):
         voice = sub[sub["typ"] == "VOICE"]
         proba = sub[sub["typ"] == "PRÓBA"]
         sms = sub[sub["typ"].isin(["SMS", "MMS"])]
+        ix, iy = rx.get("identyfikator", ""), ry.get("identyfikator", "")
         wiersze.append({
             "od": rx["abonent"], "numer_od": nx, "operator_od": rx["operator"],
+            "id_od": ix,
             "do": ry["abonent"], "numer_do": ny, "operator_do": ry["operator"],
+            "id_do": iy,
+            "ta_sama_osoba": "TAK" if (ix and iy and ix == iy) else "",
             "voice": len(voice), "proby": len(proba), "sms_mms": len(sms),
             "razem": len(sub),
             "zakres_od": sub["data"].min(), "zakres_do": sub["data"].max(),
@@ -219,7 +277,8 @@ def wspolne_kontakty(rekordy):
     dane_osob = {}
     for r in rekordy:
         df = r["df"]
-        klucz_ab = f'{r["abonent"]} [{r["numer"]}]'
+        ident = r.get("identyfikator", "")
+        klucz_ab = f'{r["abonent"]} [{r["numer"]}]' + (f' {{{ident}}}' if ident else '')
         sub = df[(df["a_key"] == r["numer"]) | (df["b_key"] == r["numer"])]
         druga = sub.apply(lambda w: w["b_key"] if w["a_key"] == r["numer"] else w["a_key"], axis=1)
         for num in druga:
@@ -282,13 +341,14 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
     L.append("-" * 110)
     L.append("  SEKCJA A: ANALIZOWANI ABONENCI")
     L.append("-" * 110)
-    L.append("  {:>3} {:<28} {:<14} {:<10} {:<12} {:<12} {:>8}".format(
-        "Lp", "Folder abonenta", "Numer", "Operator", "Okres od", "Okres do", "Zdarzenia"))
-    L.append("-" * 110)
+    L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8}".format(
+        "Lp", "Folder abonenta", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator",
+        "Okres od", "Okres do", "Zdarzenia"))
+    L.append("-" * 130)
     for i, r in enumerate(rekordy, 1):
-        L.append("  {:>3} {:<28} {:<14} {:<10} {:<12} {:<12} {:>8}".format(
-            i, r["abonent"][:28], r["numer"] or "-", r["operator"],
-            r["okres_od"], r["okres_do"], len(r["df"])))
+        L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8}".format(
+            i, r["abonent"][:28], r["numer"] or "-", r.get("identyfikator", "")[:18],
+            r["operator"], r["okres_od"], r["okres_do"], len(r["df"])))
     L.append("")
 
     # SEKCJA B — bezposrednia
@@ -296,12 +356,13 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
     L.append("  SEKCJA B: KOMUNIKACJA BEZPOSREDNIA MIEDZY ANALIZOWANYMI ABONENTAMI")
     L.append("-" * 110)
     if not bezposrednia.empty:
-        L.append("  {:>3} {:<28} {:<28} {:>6} {:>6} {:>8} {:>7} {:<23}".format(
-            "Lp", "Abonent (od)", "Abonent (do)", "Voice", "Proby", "SMS/MMS", "Razem", "Zakres czasu"))
-        L.append("-" * 110)
+        L.append("  {:>3} {:<24} {:<24} {:<4} {:>6} {:>6} {:>8} {:>7} {:<23}".format(
+            "Lp", "Abonent (od)", "Abonent (do)", "Oso.", "Voice", "Proby", "SMS/MMS", "Razem", "Zakres czasu"))
+        L.append("-" * 130)
         for i, (_, r) in enumerate(bezposrednia.iterrows(), 1):
-            L.append("  {:>3} {:<28} {:<28} {:>6} {:>6} {:>8} {:>7} {:<23}".format(
-                i, r["od"][:28], r["do"][:28], r["voice"], r["proby"], r["sms_mms"], r["razem"],
+            L.append("  {:>3} {:<24} {:<24} {:<4} {:>6} {:>6} {:>8} {:>7} {:<23}".format(
+                i, r["od"][:24], r["do"][:24], r.get("ta_sama_osoba", ""), r["voice"],
+                r["proby"], r["sms_mms"], r["razem"],
                 f'{r["zakres_od"]} - {r["zakres_do"]}'))
     else:
         L.append("  Brak bezposredniej komunikacji miedzy analizowanymi abonentami.")
@@ -349,16 +410,20 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         w.writerow(["ANALIZA KRZYZOWA BILINGOW"])
         w.writerow([])
         w.writerow(["ABONENCI"])
-        w.writerow(["Folder", "Numer", "Operator", "Okres od", "Okres do", "Liczba zdarzen"])
+        w.writerow(["Folder", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator", "Okres od", "Okres do", "Liczba zdarzen"])
         for r in rekordy:
-            w.writerow([r["abonent"], r["numer"], r["operator"], r["okres_od"], r["okres_do"], len(r["df"])])
+            w.writerow([r["abonent"], r["numer"], r.get("identyfikator", ""), r["operator"],
+                        r["okres_od"], r["okres_do"], len(r["df"])])
         w.writerow([])
         w.writerow(["KOMUNIKACJA BEZPOSREDNIA"])
-        w.writerow(["Abonent (od)", "Numer od", "Operator od", "Abonent (do)", "Numer do", "Operator do",
+        w.writerow(["Abonent (od)", "Numer od", "Operator od", "PESEL/NIP od", "Abonent (do)", "Numer do",
+                    "Operator do", "PESEL/NIP do", "Ta sama osoba/firma",
                     "Voice", "Proby", "SMS/MMS", "Razem", "Zakres od", "Zakres do"])
         if not bezposrednia.empty:
             for _, r in bezposrednia.iterrows():
-                w.writerow([r["od"], r["numer_od"], r["operator_od"], r["do"], r["numer_do"], r["operator_do"],
+                w.writerow([r["od"], r["numer_od"], r["operator_od"], r.get("id_od", ""),
+                            r["do"], r["numer_do"], r["operator_do"], r.get("id_do", ""),
+                            r.get("ta_sama_osoba", ""),
                             r["voice"], r["proby"], r["sms_mms"], r["razem"], r["zakres_od"], r["zakres_do"]])
         w.writerow([])
         w.writerow(["WSPOLNE KONTAKTY OSOB TRZECICH"])
