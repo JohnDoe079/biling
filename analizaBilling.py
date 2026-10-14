@@ -24,7 +24,7 @@ Brak jakichkolwiek pytan interaktywnych.
 Uzycie:
   python3 analizaBilling.py                      # ./input -> ./raport_bilingow (tylko CSV)
   python3 analizaBilling.py --dane ./input --outdir ./raporty
-  python3 analizaBilling.py --numer 123456789    # tylko jeden numer / IMEI
+  python3 analizaBilling.py --numer 48XXXXXXXXX  # tylko jeden numer / IMEI
   python3 analizaBilling.py --bez-krzyzowej      # wylacz analize krzyzowa
   python3 analizaBilling.py --txt                # raporty dodatkowo w TXT
 
@@ -43,10 +43,16 @@ import pandas as pd
 
 from common import (
     skanuj_dane, klucz_numer, normalizuj_numer, format_numer, fmt_czas,
-    okres_bilingow, dane_abonenta, BLANK, NIE_BTS, NIE_IMEI, _clean_counts,
+    okres_bilingow, dane_abonenta, sha256_pliku, BLANK, NIE_BTS, NIE_IMEI,
+    _clean_counts,
 )
 from operators import orange, tmobile, plus, play
 from operators.base import BrakParsaraError
+
+try:
+    import raporty_docx as rdocx
+except ImportError:
+    rdocx = None   # brak python-docx -> raporty DOCX pomijane (CSV/TXT normalnie)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -185,12 +191,23 @@ def bts_polaczone(df, target, bts_map=None):
     return out
 
 def imei_dla_numeru(df, target):
-    sub = df[(_k(df["strona_a"]) == target) | (_k(df["strona_b"]) == target)]
-    imei_a = sub[_k(sub["strona_a"]) == target]["imei_a"]
-    imei_b = sub[_k(sub["strona_b"]) == target]["imei_b"]
-    all_imei = pd.concat([imei_a, imei_b])
-    all_imei = all_imei[~all_imei.isin(NIE_IMEI) & all_imei.notna()]
-    return all_imei.value_counts().rename_axis("imei").reset_index(name="liczba_zdarzen")
+    """Urzadzenia (IMEI) uzywane przez numer + najczestszy IMSI karty SIM w danym urzadzeniu."""
+    ka, kb = _k(df["strona_a"]), _k(df["strona_b"])
+    sub = df[(ka == target) | (kb == target)]
+    pary = pd.concat([
+        sub[ka == target][["imei_a", "imsi_a"]].rename(columns={"imei_a": "imei", "imsi_a": "imsi"}),
+        sub[kb == target][["imei_b", "imsi_b"]].rename(columns={"imei_b": "imei", "imsi_b": "imsi"}),
+    ], ignore_index=True)
+    pary = pary[~pary["imei"].isin(NIE_IMEI) & pary["imei"].notna()]
+    if pary.empty:
+        return pd.DataFrame(columns=["imei", "liczba_zdarzen", "imsi"])
+    out = pary.groupby("imei").agg(liczba_zdarzen=("imei", "size")).reset_index()
+
+    def _top_imsi(s):
+        s = s[~s.isin(NIE_IMEI) & s.notna() & (s.astype(str).str.len() >= 5)]
+        return s.value_counts().index[0] if len(s) else ""
+    out["imsi"] = out["imei"].map(pary.groupby("imei")["imsi"].apply(_top_imsi))
+    return out.sort_values("liczba_zdarzen", ascending=False).reset_index(drop=True)
 
 def internet_stats(df, target):
     data = df[df["typ"] == "DATA"]
@@ -423,11 +440,13 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             lines.append("-" * 100)
             lines.append("  SEKCJA 5: URZADZENIA (IMEI) UZYWANE PRZEZ ANALIZOWANY NUMER")
             lines.append("-" * 100)
-            lines.append("  {:>4} {:<18} {:>16} {:<30}".format("Lp", "IMEI", "Liczba zdarzen", "Uwagi"))
+            lines.append("  {:>4} {:<18} {:>16} {:<18} {:<30}".format(
+                "Lp", "IMEI", "Liczba zdarzen", "IMSI", "Uwagi"))
             lines.append("-" * 100)
             for i, (_, r) in enumerate(imei_b.iterrows(), 1):
                 uwagi_r = "(glowne)" if i == 1 else ""
-                line = "  {:>4} {:<18} {:>16} {:<30}".format(i, r['imei'], r['liczba_zdarzen'], uwagi_r)
+                line = "  {:>4} {:<18} {:>16} {:<18} {:<30}".format(
+                    i, r['imei'], r['liczba_zdarzen'], r.get('imsi', ''), uwagi_r)
                 lines.append(line)
             if len(imei_b) > 1:
                 lines.append("")
@@ -448,7 +467,7 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
 
 def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, outpath,
                        historia_abonentow=None, historia_kontaktow=None, bloki=None,
-                       uwagi=None):
+                       uwagi=None, preambula=None):
     if bloki is None:
         bloki = [{
             'naglowek': None,
@@ -459,6 +478,10 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
 
     with open(outpath, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f, delimiter=';', quoting=csv.QUOTE_MINIMAL)
+
+        if preambula:
+            for wiersz in preambula:
+                writer.writerow(wiersz)
 
         main_abonent = abonent if (abonent and abonent.get("nazwa")) else bloki[-1]['abonent']
         meta = f"RAPORT KONCOWY — ANALIZA BILINGOW | Numer: {format_numer(target)}"
@@ -577,9 +600,9 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             imei_b = blok['imei']
             if not imei_b.empty:
                 writer.writerow(["SEKCJA 5: URZĄDZENIA (IMEI)"])
-                writer.writerow(["Lp", "IMEI", "Liczba zdarzeń", "Uwagi"])
+                writer.writerow(["Lp", "IMEI", "Liczba zdarzeń", "IMSI", "Uwagi"])
                 for i, (_, r) in enumerate(imei_b.iterrows(), 1):
-                    writer.writerow([i, r['imei'], r['liczba_zdarzen'],
+                    writer.writerow([i, r['imei'], r['liczba_zdarzen'], r.get('imsi', ''),
                                      "glowne" if i == 1 else ""])
                 if len(imei_b) > 1:
                     writer.writerow(["UWAGA:", f"Wykryto {len(imei_b)} roznych urzadzen (IMEI) dla numeru {target}."])
@@ -817,9 +840,12 @@ def generuj_raport_urzadzenia_txt(imei, numery_df, kontakty_df, imsi_df, bts_df,
 
 def generuj_raport_urzadzenia_csv(imei, numery_df, kontakty_df, imsi_df, bts_df,
                                   operator_nazwa, abonent, okres_od, okres_do,
-                                  outpath, uwagi=None):
+                                  outpath, uwagi=None, preambula=None):
     with open(outpath, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f, delimiter=';', quoting=csv.QUOTE_MINIMAL)
+        if preambula:
+            for wiersz in preambula:
+                w.writerow(wiersz)
         meta = f"ANALIZA URZADZENIA (IMEI) | IMEI: {imei} | Operator: {operator_nazwa} | Zrodlo: {abonent}"
         w.writerow([meta])
         w.writerow([f"Okres danych: {okres_od} - {okres_do}"])
@@ -933,7 +959,22 @@ def _rekord_pusty(operator, abonent, folder, uwagi):
         "folder": folder, "df": pusty_df(), "nazwiska_map": {}, "historia": {},
         "bts_map": {}, "okres_od": "", "okres_do": "", "uwagi": uwagi,
         "zrodla": [etykieta],
+        "pliki": [],
     }
+
+def _pliki_zestawu(zestaw):
+    """Listing plikow zrodlowych zestawu z sumami kontrolnymi SHA-256."""
+    out = []
+    for rola, klucz in (("wykaz polaczen", "wykaz"), ("transmisja danych", "transmisja"),
+                        ("dane abonenckie", "nazwiska"), ("wykaz BTS", "bts")):
+        p = zestaw.get(klucz)
+        if p and os.path.isfile(p):
+            try:
+                digest = sha256_pliku(p)
+            except Exception:
+                digest = "(blad odczytu)"
+            out.append({"rola": rola, "plik": os.path.basename(p), "sha256": digest})
+    return out
 
 def wczytaj_rekordy(root, verbose=True):
     """
@@ -996,6 +1037,7 @@ def wczytaj_rekordy(root, verbose=True):
                         "uwagi": "brak wykazu polaczen — tylko dane abonenckie "
                                  "(zapytanie po karcie SIM / numerze)",
                         "zrodla": [etykieta],
+                        "pliki": _pliki_zestawu(zestaw),
                     })
                     print(f"    -> {operator}/{etykieta}: tryb=msisdn cel={numer_ab} | "
                           f"tylko dane abonenckie | SIM: {wpis_ab.get('sim', '-')} | "
@@ -1074,6 +1116,7 @@ def wczytaj_rekordy(root, verbose=True):
                 "historia": historia, "bts_map": bts_map,
                 "okres_od": od, "okres_do": do, "uwagi": uwagi,
                 "zrodla": [etykieta],
+                "pliki": _pliki_zestawu(zestaw),
             })
             print(f"    -> {operator}/{etykieta}: tryb={tryb} cel={cel or '-'} | "
                   f"rekordow: {len(df)} | okres: {od or '-'} - {do or '-'}"
@@ -1091,6 +1134,7 @@ def wczytaj_rekordy(root, verbose=True):
             r2["historia"] = {n: list(w) for n, w in r["historia"].items()}
             r2["bts_map"] = dict(r["bts_map"])
             r2["zrodla"] = list(r["zrodla"])
+            r2["pliki"] = list(r["pliki"])
             scalone[k] = r2
             kolejnosc.append(k)
         else:
@@ -1108,6 +1152,7 @@ def wczytaj_rekordy(root, verbose=True):
             if r["uwagi"] and not r2["uwagi"]:
                 r2["uwagi"] = r["uwagi"]
             r2["zrodla"].extend(r["zrodla"])
+            r2["pliki"].extend(r["pliki"])
     for k in kolejnosc:
         r2 = scalone[k]
         if len(r2["zrodla"]) > 1:
@@ -1127,14 +1172,86 @@ def wczytaj_rekordy(root, verbose=True):
 # RAPORTY PER NUMER / PER URZADZENIE
 # ══════════════════════════════════════════════════════════════════════
 
-def raport_per_numer(r, outdir, txt=False):
+def _dane_ogledzin(r):
+    """Dane do formulki oględzin: operator, przedmiot (numer/IMEI), okres."""
+    op = OPERATORZY[r["operator"]]["nazwa"]
+    if r["tryb"] == "imei":
+        cel_txt = f"urzadzenia o numerze IMEI {r['cel']}"
+    elif r["cel"]:
+        cel_txt = f"numeru {format_numer(r['cel'])}"
+    else:
+        cel_txt = "numeru (brak danych identyfikujacych)"
+    od = r["okres_od"] or "brak danych"
+    do = r["okres_do"] or "brak danych"
+    return op, cel_txt, od, do
+
+def preambula_ogledzin_txt(r):
+    """Formulka oględzin + listing plikow zrodlowych z SHA-256 (TXT)."""
+    op, cel_txt, od, do = _dane_ogledzin(r)
+    L = ["=" * 120,
+         "  OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH",
+         "=" * 120,
+         f"  Oględzinom poddano dane telekomunikacyjne dostarczone przez operatora {op}",
+         f"  dla {cel_txt} za okres od {od} do {do}.",
+         f"  Dane umieszczono w folderze abonenta '{r['abonent']}' ({r['operator']}).",
+         ""]
+    pliki = r.get("pliki") or []
+    if pliki:
+        L.append("  PLIKI ŹRÓDŁOWE (listing z sumami kontrolnymi SHA-256):")
+        L.append("  {:>3}  {:<24}  {:<56}  SHA-256".format("Lp", "Rola", "Plik"))
+        L.append("  " + "-" * 116)
+        for i, pz in enumerate(pliki, 1):
+            L.append("  {:>3}  {:<24}  {:<56}  {}".format(
+                i, pz["rola"][:24], pz["plik"][:56], pz["sha256"]))
+    else:
+        L.append("  PLIKI ŹRÓDŁOWE: brak rozpoznawalnych plikow w folderze abonenta.")
+    L.append("")
+    return "\n".join(L)
+
+def preambula_ogledzin_csv(r):
+    """Formulka oględzin + listing plikow (wiersze CSV)."""
+    op, cel_txt, od, do = _dane_ogledzin(r)
+    rows = [["OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH"],
+            [f"Oględzinom poddano dane telekomunikacyjne dostarczone przez operatora "
+             f"{op} dla {cel_txt} za okres od {od} do {do}."],
+            [f"Folder abonenta: {r['abonent']} ({r['operator']})"], []]
+    pliki = r.get("pliki") or []
+    if pliki:
+        rows.append(["Lp", "Rola", "Plik", "SHA-256"])
+        for i, pz in enumerate(pliki, 1):
+            rows.append([i, pz["rola"], pz["plik"], pz["sha256"]])
+    else:
+        rows.append(["PLIKI ŹRÓDŁOWE: brak rozpoznawalnych plikow w folderze abonenta."])
+    rows.append([])
+    return rows
+
+def _pre_dane(r):
+    """Slownik preambuly oględzin dla generatorow DOCX."""
+    op, cel_txt, od, do = _dane_ogledzin(r)
+    return {"operator": op, "cel_txt": cel_txt, "od": od, "do": do,
+            "folder": r["abonent"], "operator_key": r["operator"],
+            "pliki": r.get("pliki") or []}
+
+def raport_per_numer(r, outdir, txt=False, dodatkowe_nazwiska=None, dodatkowe_historia=None):
     """Klasyczny raport dla jednego numeru MSISDN (CSV; TXT tylko gdy txt=True).
-    Generowany ZAWSZE — rowniez dla pustych danych (sekcje 'Brak zdarzen')."""
+    Generowany ZAWSZE — rowniez dla pustych danych (sekcje 'Brak zdarzen').
+    dodatkowe_nazwiska/historia: dane abonenckie z pozostalych analizowanych
+    zrodel (inni operatorzy) — operator podaje dane abonentow tylko ze swojej
+    sieci, wiec kontakty-bedace-analizowanymi-numerami uzupelniamy z ich folderow."""
     if r["tryb"] != "msisdn" or not r["cel"]:
         return None
     target = r["cel"]
     df = r["df"]
     nazwiska_map, historia, bts_map = r["nazwiska_map"], r["historia"], r["bts_map"]
+    if dodatkowe_nazwiska:
+        _nm = dict(dodatkowe_nazwiska)
+        _nm.update(nazwiska_map)   # wlasne dane operatora wygrywaja
+        nazwiska_map = _nm
+    if dodatkowe_historia:
+        _hs = {n: list(w) for n, w in dodatkowe_historia.items()}
+        for n, w in historia.items():
+            _hs[n] = w
+        historia = _hs
     uwagi = r.get("uwagi")
 
     kp = kontakty_zdarzenia(df, target, nazwiska_map)
@@ -1242,10 +1359,21 @@ def raport_per_numer(r, outdir, txt=False):
     os.makedirs(target_dir, exist_ok=True)
     p_csv = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.csv")
     generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, p_csv,
-                       historia_abonentow, historia_kontaktow, bloki=bloki, uwagi=uwagi)
+                       historia_abonentow, historia_kontaktow, bloki=bloki, uwagi=uwagi,
+                       preambula=preambula_ogledzin_csv(r))
+    if rdocx is not None:
+        try:
+            p_docx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
+            rdocx.raport_numer_docx(p_docx, target, kp, ks, bts, imei_df, abonent, inet,
+                                    okres_od, okres_do, historia_abonentow, historia_kontaktow,
+                                    bloki, uwagi, _pre_dane(r))
+        except Exception as e:
+            print(f"    [!] {r['abonent']}: blad raportu DOCX: {e}")
     if txt:
         p_txt = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.txt")
         with open(p_txt, "w", encoding="utf-8") as f:
+            f.write(preambula_ogledzin_txt(r))
+            f.write("\n\n")
             f.write(generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet,
                                        okres_od, okres_do, historia_abonentow,
                                        historia_kontaktow, bloki=bloki, uwagi=uwagi))
@@ -1253,7 +1381,7 @@ def raport_per_numer(r, outdir, txt=False):
     return p_csv
 
 
-def raport_per_urzadzenie(r, outdir, txt=False):
+def raport_per_urzadzenie(r, outdir, txt=False, dodatkowe_nazwiska=None):
     """Raport urzadzenia (IMEI): jakie numery MSISDN byly uzywane w tym telefonie.
     CSV domyslnie; TXT tylko gdy txt=True."""
     if r["tryb"] != "imei" or not r["cel"]:
@@ -1261,6 +1389,10 @@ def raport_per_urzadzenie(r, outdir, txt=False):
     imei = r["cel"]
     df = r["df"]
     nazwiska_map = r["nazwiska_map"]
+    if dodatkowe_nazwiska:
+        _nm = dict(dodatkowe_nazwiska)
+        _nm.update(nazwiska_map)
+        nazwiska_map = _nm
     info = OPERATORZY[r["operator"]]
 
     numery_df = numery_dla_urzadzenia(df, imei, nazwiska_map)
@@ -1274,10 +1406,20 @@ def raport_per_urzadzenie(r, outdir, txt=False):
     p_csv = os.path.join(target_dir, f"{imei}_RAPORT_URZADZENIA.csv")
     generuj_raport_urzadzenia_csv(
         imei, numery_df, kontakty_df, imsi_df, bts_df,
-        info["nazwa"], r["abonent"], okres_od, okres_do, p_csv, uwagi=r.get("uwagi"))
+        info["nazwa"], r["abonent"], okres_od, okres_do, p_csv, uwagi=r.get("uwagi"),
+        preambula=preambula_ogledzin_csv(r))
+    if rdocx is not None:
+        try:
+            p_docx = os.path.join(target_dir, f"{imei}_RAPORT_URZADZENIA.docx")
+            rdocx.raport_urzadzenie_docx(p_docx, imei, numery_df, kontakty_df, imsi_df,
+                                         bts_df, _pre_dane(r))
+        except Exception as e:
+            print(f"    [!] {r['abonent']}: blad raportu DOCX: {e}")
     if txt:
         p_txt = os.path.join(target_dir, f"{imei}_RAPORT_URZADZENIA.txt")
         with open(p_txt, "w", encoding="utf-8") as f:
+            f.write(preambula_ogledzin_txt(r))
+            f.write("\n\n")
             f.write(generuj_raport_urzadzenia_txt(
                 imei, numery_df, kontakty_df, imsi_df, bts_df,
                 info["nazwa"], r["abonent"], okres_od, okres_do, uwagi=r.get("uwagi")))
@@ -1304,6 +1446,15 @@ def analiza_krzyzowa(rekordy, outdir):
     out_txt = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.txt")
     out_csv = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.csv")
     ak.generuj_raport_zbiorczy(msisdn_rek, bezposrednia, wspolne, imei_df, out_txt, out_csv)
+    if rdocx is not None:
+        try:
+            out_docx = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.docx")
+            osoby = ak.osoby_z_rekordow(msisdn_rek)
+            kom_osob = ak.komunikacja_osob(bezposrednia, osoby)
+            rdocx.raport_krzyzowy_docx(out_docx, msisdn_rek, osoby, kom_osob, wspolne, imei_df,
+                                       datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception as e:
+            print(f"    [!] blad raportu DOCX krzyzowego: {e}")
 
     print("\n" + "=" * 100)
     print("  PODSUMOWANIE ANALIZY KRZYZOWEJ (raport automatyczny)")
@@ -1361,15 +1512,32 @@ def przebieg(dane, outdir, tylko=None, bez_krzyzowej=False, txt=False):
     if imeje:
         print(f"    Urzadzenia IMEI ({len(imeje)}): {', '.join(imeje)}")
 
+    # Raporty trafiaja do podfolderu z data i godzina uruchomienia (czas maszyny)
+    outdir = os.path.join(outdir, datetime.now().strftime("%Y-%m-%d_%H%M"))
     os.makedirs(outdir, exist_ok=True)
+
+    # Globalne dane abonenckie ze WSZYSTKICH zrodel — operator podaje dane
+    # abonentow tylko ze swojej sieci, wiec kontakty bedace analizowanymi
+    # numerami z innych sieci uzupelniamy z ich folderow.
+    global_nazwiska, global_historia = {}, {}
+    for r in rekordy:
+        global_nazwiska.update(r["nazwiska_map"])
+        for n, w in r["historia"].items():
+            global_historia.setdefault(n, [])
+            for wpis in w:
+                if wpis not in global_historia[n]:
+                    global_historia[n].append(wpis)
 
     print("\n[+] Generowanie raportow per numer / urzadzenie (CSV" + (", +TXT" if txt else "") + "):")
     for r in rekordy:
         try:
             if r["tryb"] == "imei":
-                sciezka = raport_per_urzadzenie(r, outdir, txt=txt)
+                sciezka = raport_per_urzadzenie(r, outdir, txt=txt,
+                                                dodatkowe_nazwiska=global_nazwiska)
             else:
-                sciezka = raport_per_numer(r, outdir, txt=txt)
+                sciezka = raport_per_numer(r, outdir, txt=txt,
+                                           dodatkowe_nazwiska=global_nazwiska,
+                                           dodatkowe_historia=global_historia)
             if sciezka:
                 print(f"    raport: {sciezka}")
             else:
