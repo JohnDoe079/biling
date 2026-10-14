@@ -1,9 +1,4 @@
-FOLDER OPERATORA: ORANGE
-============================================================
-
-WRZUCAJ TUTAJ podfoldery abonentow Orange, np.:
-  input/orange/Kowalski_Jan/xxx_wykaz.pdf
-  input/orange/Kowalski_Jan/xxx_daneOsobowe.pdf
-  input/orange/Kowalski_Jan/xxx_bts.pdf
-
-Kazdy abonent = osobny podfolder o dowolnej nazwie.
+W tym folderze umieszczamy pliki PDF od Orange Polska:
+  <msisdn>_wykaz.pdf        - wykaz polaczen
+  <msisdn>_daneOsobowe.pdf  - dane osobowe (nazwiska)
+  <msisdn>_bts.pdf          - wykaz BTS

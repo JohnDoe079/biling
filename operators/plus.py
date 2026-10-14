@@ -186,13 +186,16 @@ def parse_plus_nazwiska(path: str, verbose: bool = False):
                 return df[cols[n]]
         return pd.Series([""] * len(df))
 
-    msisdn_s  = kol("msisdn").map(_czysto)
-    pesel_s   = kol("pesel").map(_czysto)
-    nip_s     = kol("nip").map(_czysto)
-    nazwa_s   = kol("imię i nazwisko/nazwa", "imię i nazwisko", "nazwa").map(_czysto)
-    adres_s   = kol("adres").map(_czysto)
-    wazne_od  = kol("ważne od", "wazne od").map(_czysto)
-    wazne_do  = kol("ważne do", "wazne do").map(_czysto)
+    msisdn_s   = kol("msisdn").map(_czysto)
+    pesel_s    = kol("pesel").map(_czysto)
+    nip_s      = kol("nip").map(_czysto)
+    sim_s      = kol("sim").map(_czysto)
+    typms_s    = kol("typ msisdn").map(_czysto)
+    status_s   = kol("status").map(_czysto)
+    nazwa_s    = kol("imię i nazwisko/nazwa", "imię i nazwisko", "nazwa").map(_czysto)
+    adres_s    = kol("adres").map(_czysto)
+    wazne_od   = kol("ważne od", "wazne od").map(_czysto)
+    wazne_do   = kol("ważne do", "wazne do").map(_czysto)
 
     for i in range(len(df)):
         num = klucz_numer(msisdn_s.iloc[i])
@@ -206,6 +209,9 @@ def parse_plus_nazwiska(path: str, verbose: bool = False):
             "adres": adres_s.iloc[i],
             "pesel": pesel_s.iloc[i],
             "nip": nip_s.iloc[i],
+            "sim": sim_s.iloc[i],
+            "typ_msisdn": typms_s.iloc[i],
+            "status": status_s.iloc[i],
             "data_akt": (wazne_od.iloc[i] or "")[:10],
             "data_dezakt": (wazne_do.iloc[i] or "")[:10],
         }
@@ -254,7 +260,8 @@ def datasets(folder: str):
     out = []
     for token in sorted(grupy):
         g = grupy[token]
-        if "wykaz_polaczen" not in g and "transmisja_danych" not in g:
+        if "wykaz_polaczen" not in g and "transmisja_danych" not in g \
+                and "dane_abonenckie" not in g:
             continue
         out.append({
             "token": token,

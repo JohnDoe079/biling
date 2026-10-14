@@ -20,6 +20,12 @@ Co robi:
 Uzycie:
     python3 analizaKrzyzowa.py --dane ./dane --outdir ./raport_krzyzowy
     python3 analizaKrzyzowa.py            # tryb interaktywny
+
+Uwaga: glownym entry pointem jest analizaBilling.py (raporty per numer +
+automatyczna analiza krzyzowa). Ten modul dostarcza funkcje analizy
+krzyzowej i generator raportu zbiorczego; rekordy z polem tryb="imei"
+(dane kluczowane po urzadzeniu) sa pomijane w sekcjach B i C, ale ich
+IMEI uczestnicza w sekcji D (wspolne urzadzenia).
 """
 import argparse
 import csv
@@ -31,7 +37,7 @@ from datetime import datetime
 import pandas as pd
 
 from common import (
-    skanuj_dane, klucz_numer, normalizuj_numer, fmt_czas, input_path,
+    skanuj_dane, klucz_numer, normalizuj_numer, format_numer, fmt_czas, input_path,
     dane_abonenta, okres_bilingow, BLANK, NIE_IMEI, _clean_counts,
 )
 from operators import orange, tmobile, plus, play
@@ -232,12 +238,13 @@ def komunikacja_bezposrednia(rekordy):
     """
     Laczy abonentow ze soba: zdarzenie, w ktorym strona A nalezy do abonenta X
     a strona B do abonenta Y (lub odwrotnie). Zwraca DataFrame par.
+    Rekordy tryb="imei" (dane urzadzenia) sa pomijane — nie sa numerami MSISDN.
     """
-    numery = {r["numer"]: r for r in rekordy if r["numer"]}
     wiersze = []
     for rx, ry in itertools.permutations(rekordy, 2):
         nx, ny = rx["numer"], ry["numer"]
-        if not nx or not ny or nx == ny:
+        if (not nx or not ny or nx == ny
+                or rx.get("tryb") == "imei" or ry.get("tryb") == "imei"):
             continue
         dfx = rx["df"]
         # zdarzenia gdzie abonent X to strona A a numer abonenta Y to strona B
@@ -272,10 +279,12 @@ def wspolne_kontakty(rekordy):
     z co najmniej dwoma analizowanymi abonentami.
     Zwraca DataFrame: numer_osoby, abonenci, operatorzy, liczby zdarzen per abonent.
     """
-    zbior_numerow = {r["numer"] for r in rekordy if r["numer"]}
+    zbior_numerow = {r["numer"] for r in rekordy
+                     if r["numer"] and r.get("tryb") != "imei"}
     kontakty = {}  # klucz_numer -> {abonent_key: liczba}
-    dane_osob = {}
     for r in rekordy:
+        if r.get("tryb") == "imei" or not r["numer"]:
+            continue
         df = r["df"]
         ident = r.get("identyfikator", "")
         klucz_ab = f'{r["abonent"]} [{r["numer"]}]' + (f' {{{ident}}}' if ident else '')
@@ -306,7 +315,8 @@ def wspolne_kontakty(rekordy):
 def wspolne_imei(rekordy):
     """
     IMEI wystepujace w billingach co najmniej dwoch roznych abonentow
-    (mozliwe wspoluzytkowanie/wymiana urzadzen).
+    (mozliwe wspoluzytkowanie/wymiana urzadzen). Uwzględnia takze zestawy
+    kluczowane po IMEI (tryb="imei").
     """
     per_imei = {}
     for r in rekordy:
@@ -314,7 +324,7 @@ def wspolne_imei(rekordy):
         imeis = pd.concat([df["imei_a"], df["imei_b"]])
         imeis = imeis[~imeis.isin(NIE_IMEI) & imeis.notna()].unique()
         for imei in imeis:
-            per_imei.setdefault(imei, set()).add(f'{r["abonent"]} [{r["numer"]}]')
+            per_imei.setdefault(imei, set()).add(f'{r["abonent"]} [{r["numer"] or r.get("cel") or "IMEI"}]')
     wiersze = [
         {"imei": imei, "abonenci": " | ".join(sorted(ab)), "liczba_abonentow": len(ab)}
         for imei, ab in per_imei.items() if len(ab) >= 2
@@ -347,7 +357,7 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
     L.append("-" * 130)
     for i, r in enumerate(rekordy, 1):
         L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8}".format(
-            i, r["abonent"][:28], r["numer"] or "-", r.get("identyfikator", "")[:18],
+            i, r["abonent"][:28], format_numer(r["numer"]) or "-", r.get("identyfikator", "")[:18],
             r["operator"], r["okres_od"], r["okres_do"], len(r["df"])))
     L.append("")
 
@@ -378,7 +388,7 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         L.append("-" * 110)
         for i, (_, r) in enumerate(wspolne.iterrows(), 1):
             L.append("  {:>3} {:<14} {:>3} {:>8}  {:<70}".format(
-                i, r["numer_kontaktu"], r["liczba_abonentow"], r["razem_zdarzen"],
+                i, format_numer(r["numer_kontaktu"]), r["liczba_abonentow"], r["razem_zdarzen"],
                 r["abonenci"][:70]))
     else:
         L.append("  Brak wspolnych kontaktow osob trzecich.")
@@ -412,7 +422,7 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         w.writerow(["ABONENCI"])
         w.writerow(["Folder", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator", "Okres od", "Okres do", "Liczba zdarzen"])
         for r in rekordy:
-            w.writerow([r["abonent"], r["numer"], r.get("identyfikator", ""), r["operator"],
+            w.writerow([r["abonent"], format_numer(r["numer"]), r.get("identyfikator", ""), r["operator"],
                         r["okres_od"], r["okres_do"], len(r["df"])])
         w.writerow([])
         w.writerow(["KOMUNIKACJA BEZPOSREDNIA"])
@@ -421,8 +431,8 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
                     "Voice", "Proby", "SMS/MMS", "Razem", "Zakres od", "Zakres do"])
         if not bezposrednia.empty:
             for _, r in bezposrednia.iterrows():
-                w.writerow([r["od"], r["numer_od"], r["operator_od"], r.get("id_od", ""),
-                            r["do"], r["numer_do"], r["operator_do"], r.get("id_do", ""),
+                w.writerow([r["od"], format_numer(r["numer_od"]), r["operator_od"], r.get("id_od", ""),
+                            r["do"], format_numer(r["numer_do"]), r["operator_do"], r.get("id_do", ""),
                             r.get("ta_sama_osoba", ""),
                             r["voice"], r["proby"], r["sms_mms"], r["razem"], r["zakres_od"], r["zakres_do"]])
         w.writerow([])
@@ -430,7 +440,7 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         w.writerow(["Numer kontaktu", "Liczba abonentow", "Razem zdarzen", "Abonenci"])
         if not wspolne.empty:
             for _, r in wspolne.iterrows():
-                w.writerow([r["numer_kontaktu"], r["liczba_abonentow"], r["razem_zdarzen"], r["abonenci"]])
+                w.writerow([format_numer(r["numer_kontaktu"]), r["liczba_abonentow"], r["razem_zdarzen"], r["abonenci"]])
         w.writerow([])
         w.writerow(["WSPOLNE IMEI"])
         w.writerow(["IMEI", "Liczba abonentow", "Abonenci"])
@@ -444,10 +454,10 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
 # ══════════════════════════════════════════════════════════════════════
 
 def raport_per_numer(r, outdir):
-    """Generuje klasyczny raport dla jednego abonenta (bez wypisywania na ekran)."""
+    """Generuje klasyczny raport dla jednego abonenta (bez wypisywania na ekran).
+    Pomija rekordy tryb="imei" (dane urzadzenia — raportuje je analizaBilling)."""
     target = r["numer"]
-    if not target:
-        print(f"[!] {r['abonent']}: brak numeru — pominięto raport per numer.")
+    if not target or r.get("tryb") == "imei":
         return
     df = r["df"]
     nazwiska_map, historia = r["nazwiska_map"], r["historia"]
@@ -485,7 +495,7 @@ def raport_per_numer(r, outdir):
 # ══════════════════════════════════════════════════════════════════════
 
 def przebieg(root: str, outdir: str, bez_per_numer: bool = False):
-    """Pelny przebieg analizy krzyzowej (wywolywany z CLI i z analizaBilling)."""
+    """Pelny przebieg analizy krzyzowej (wywolywany z CLI)."""
     if not os.path.isdir(root):
         print(f"[!] Nie ma takiego katalogu: {root}")
         sys.exit(1)

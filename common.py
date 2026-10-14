@@ -74,6 +74,24 @@ def normalizuj_numer(num) -> str:
         return ""
     return re.sub(r"\D", "", str(num))
 
+def format_numer(num) -> str:
+    """
+    Prezentacja numeru Z prefiksem krajowym: 48123456789.
+    - 9 cyfr bez prefiksu -> zakladamy numer polski i doklejamy 48
+      (polskie numery komorkowe i stacjonarne maja po 9 cyfr),
+    - 0048xxx / 48xxx -> kanonicznie 48xxx,
+    - numery zagraniczne i krotkie kody (112, 998) -> bez zmian.
+    Uzywac WYLACZNIE do wyswietlania; do porownan klucz_numer().
+    """
+    n = normalizuj_numer(num)
+    if not n:
+        return ""
+    if n.startswith("0048") and len(n) == 13:
+        return "48" + n[4:]
+    if len(n) == 9 and not n.startswith("48"):
+        return "48" + n
+    return n
+
 def klucz_numer(num) -> str:
     """
     Kanoniczna postac numeru do porownan (klucz w mapach, laczenie billingow).
