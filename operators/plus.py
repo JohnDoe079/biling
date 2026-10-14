@@ -235,7 +235,13 @@ def parse_plus_nazwiska(path: str, verbose: bool = False):
 #   ...-wyniki-8275782-transmisja_danych-...xls
 # Token (np. 8275782) to ID zapytania — laczy pliki jednego numeru.
 
+# Prefix NQR (np. 1QR..6QR) = "N query" — oznaczenie odpowiedzi operatora na
+# JEDNO zapytanie; pliki z tym samym prefixem tworza scisle powiazany zestaw
+# (czesto: wykaz + dane abonenckie + transmisja jednej odpowiedzi).
+# Grupujemy po (prefix QR, token), a analize i tak prowadzimy po zawartosci
+# (klucz = MSISDN z danych).
 _RE_PLIK = re.compile(
+    r"^(?:(?P<qr>\d+)QR[-_])?.*?"
     r"wyniki-(?P<token>\d+)-(?:(?:dane_)?)(?P<rola>wykaz_polaczen|dane_abonenckie|transmisja_danych)",
     re.IGNORECASE)
 
@@ -252,19 +258,23 @@ def datasets(folder: str):
                    glob.glob(os.path.join(folder, "*.pdf")))
     grupy, inne = {}, []
     for f in pliki:
-        m = _RE_PLIK.search(os.path.basename(f))
+        m = _RE_PLIK.match(os.path.basename(f))
         if m:
-            grupy.setdefault(m.group("token"), {})[m.group("rola")] = f
+            klucz = (m.group("qr") or "", m.group("token"))
+            g = grupy.setdefault(klucz, {})
+            if m.group("rola") not in g:   # duplikat roli: pierwszy plik wygrywa
+                g[m.group("rola")] = f
         else:
             inne.append(f)
     out = []
-    for token in sorted(grupy):
-        g = grupy[token]
+    for (qr, token) in sorted(grupy):
+        g = grupy[(qr, token)]
         if "wykaz_polaczen" not in g and "transmisja_danych" not in g \
                 and "dane_abonenckie" not in g:
             continue
         out.append({
             "token": token,
+            "qr": qr,
             "wykaz": g.get("wykaz_polaczen"),
             "nazwiska": g.get("dane_abonenckie"),
             "transmisja": g.get("transmisja_danych"),

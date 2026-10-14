@@ -1031,37 +1031,39 @@ def wczytaj_rekordy(root, verbose=True):
             uwagi = None
 
             if not zestaw.get("wykaz") and not zestaw.get("transmisja"):
-                # Tylko dane abonenckie (np. zapytanie po numerze karty SIM):
-                # numer MSISDN bierzemy z wierszy danych, a nie z folderu.
-                numer_ab, nm_ab, hst_ab = None, {}, {}
+                # Tylko dane abonenckie (np. JEDNO zapytanie o KILKA kart SIM):
+                # kazdy wiersz z MSISDN to osobny numer — kluczem jest MSISDN.
+                # Wiersze bez MSISDN ("Nie znaleziono") nie dotycza zadnego
+                # abonenta i sa pomijane.
+                nm_ab, hst_ab = {}, {}
                 if zestaw.get("nazwiska") and info.get("parse_nazwiska"):
                     try:
                         nm_ab, hst_ab = info["parse_nazwiska"](zestaw["nazwiska"], verbose=False)
-                        z_danymi = [n for n, w in nm_ab.items() if w.get("nazwa") or w.get("pesel")]
-                        numer_ab = z_danymi[0] if z_danymi else None
                     except Exception as e:
                         print(f"    [!] {operator}/{etykieta}: blad parsowania danych abonenckich: {e}")
-                if numer_ab:
-                    od_ab = min([w.get("data_akt") or "9999-99-99" for w in hst_ab.get(numer_ab, [])])
-                    do_ab = max([w.get("data_dezakt") or "" for w in hst_ab.get(numer_ab, [])])
-                    wpis_ab = nm_ab.get(numer_ab, {})
-                    rekordy.append({
-                        "operator": operator, "abonent": etykieta,
-                        "numer": numer_ab, "tryb": "msisdn", "cel": numer_ab,
-                        "identyfikator": wpis_ab.get("pesel") or wpis_ab.get("nip") or "",
-                        "folder": folder, "df": pusty_df(), "nazwiska_map": nm_ab,
-                        "historia": hst_ab, "bts_map": {},
-                        "okres_od": "" if od_ab == "9999-99-99" else od_ab,
-                        "okres_do": do_ab,
-                        "uwagi": "brak wykazu polaczen — tylko dane abonenckie "
-                                 "(zapytanie po karcie SIM / numerze)",
-                        "zrodla": [etykieta],
-                        "pliki": _pliki_zestawu(folder),
-                    })
-                    print(f"    -> {operator}/{etykieta}: tryb=msisdn cel={numer_ab} | "
-                          f"tylko dane abonenckie | SIM: {wpis_ab.get('sim', '-')} | "
-                          f"forma: {wpis_ab.get('typ_msisdn', '-')} | "
-                          f"status: {wpis_ab.get('status', '-')}")
+                numery_ab = [n for n, w in nm_ab.items() if w.get("nazwa") or w.get("pesel")]
+                if numery_ab:
+                    for numer_ab in numery_ab:
+                        od_ab = min([w.get("data_akt") or "9999-99-99" for w in hst_ab.get(numer_ab, [])])
+                        do_ab = max([w.get("data_dezakt") or "" for w in hst_ab.get(numer_ab, [])])
+                        wpis_ab = nm_ab.get(numer_ab, {})
+                        rekordy.append({
+                            "operator": operator, "abonent": etykieta,
+                            "numer": numer_ab, "tryb": "msisdn", "cel": numer_ab,
+                            "identyfikator": wpis_ab.get("pesel") or wpis_ab.get("nip") or "",
+                            "folder": folder, "df": pusty_df(), "nazwiska_map": nm_ab,
+                            "historia": hst_ab, "bts_map": {},
+                            "okres_od": "" if od_ab == "9999-99-99" else od_ab,
+                            "okres_do": do_ab,
+                            "uwagi": "brak wykazu polaczen — tylko dane abonenckie "
+                                     "(zapytanie po karcie SIM / numerze)",
+                            "zrodla": [etykieta],
+                            "pliki": _pliki_zestawu(folder),
+                        })
+                        print(f"    -> {operator}/{etykieta}: tryb=msisdn cel={numer_ab} | "
+                              f"tylko dane abonenckie | SIM: {wpis_ab.get('sim', '-')} | "
+                              f"forma: {wpis_ab.get('typ_msisdn', '-')} | "
+                              f"status: {wpis_ab.get('status', '-')}")
                 else:
                     print(f"[!] {operator}/{etykieta}: zestaw bez plikow z danymi.")
                     rekordy.append(_rekord_pusty(operator, etykieta, folder,
@@ -1158,7 +1160,8 @@ def wczytaj_rekordy(root, verbose=True):
             kolejnosc.append(k)
         else:
             r2 = scalone[k]
-            r2["df"] = pd.concat([r2["df"], r["df"]], ignore_index=True)
+            ramki = [x for x in (r2["df"], r["df"]) if x is not None and not x.empty]
+            r2["df"] = pd.concat(ramki, ignore_index=True) if ramki else pusty_df()
             r2["nazwiska_map"].update(r["nazwiska_map"])
             for n, w in r["historia"].items():
                 r2["historia"].setdefault(n, [])

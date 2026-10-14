@@ -1,6 +1,22 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
 
+## 2026-10-14 23:40
+### Zmienione
+- operators/plus.py: prefix NQR w nazwach plikow (1QR..6QR = "N query",
+  odpowiedz operatora na jedno zapytanie) uczestniczy w grupowaniu zestawow:
+  klucz = (prefix QR, token). Pliki z tym samym QR i tokenem tworza jeden
+  zestaw. Analiza prowadzona po zawartosci (klucz = MSISDN) — bez zmian.
+- Usunieto ostrzezenie pandas przy scalaniu pustych ramek.
+
+## 2026-10-14 23:34
+### Poprawione
+- Zapytanie o KILKA kart SIM (jeden plik danych abonenckich): KAZDY wiersz
+  z MSISDN staje sie osobnym rekordem/numerem (klucz = MSISDN). Wczesniej
+  brany byl tylko pierwszy numer z pliku. Wiersze bez MSISDN
+  ("Nie znaleziono") sa pomijane — nie dotycza zadnego abonenta, sa w pliku
+  tylko dlatego, ze jedno zapytanie objelo kilka kart SIM.
+
 ## 2026-10-14 23:12
 ### Dodane
 - Rozróznianie OKRESOW waznosci abonentow tego samego numeru (dane abonenckie
