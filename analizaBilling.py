@@ -34,6 +34,7 @@ Wymagania systemowe (Debian/Ubuntu):
 """
 import argparse
 import csv
+import glob
 import os
 import re
 import sys
@@ -133,8 +134,13 @@ def kontakty_zdarzenia(df, target, nazwiska_map=None):
         zakres["zakres_czasu"] = zakres["min"] + " - " + zakres["max"]
     else:
         zakres = pd.DataFrame(columns=["min", "max", "zakres_czasu"])
-    out = wych.join(przych, how="outer").fillna(0).infer_objects(copy=False)
-    out = out.join(proba_df[["proba_razem"]], how="outer").fillna(0).infer_objects(copy=False)
+    out = wych.join(przych, how="outer")
+    for _c in ["voice_wychodzace", "voice_przychodzace", "czas_wychodzacy_s", "czas_przychodzacy_s"]:
+        if _c in out.columns:
+            out[_c] = pd.to_numeric(out[_c], errors="coerce").fillna(0).astype("int64")
+    out = out.join(proba_df[["proba_razem"]], how="outer")
+    if "proba_razem" in out.columns:
+        out["proba_razem"] = pd.to_numeric(out["proba_razem"], errors="coerce").fillna(0).astype("int64")
     out = out.join(zakres[["zakres_czasu"]], how="outer").fillna("")
     for col in ["voice_wychodzace", "voice_przychodzace", "czas_wychodzacy_s", "czas_przychodzacy_s", "proba_razem"]:
         out[col] = out[col].astype(int)
@@ -192,11 +198,10 @@ def bts_polaczone(df, target, bts_map=None):
 
 def imei_dla_numeru(df, target):
     """Urzadzenia (IMEI) uzywane przez numer + najczestszy IMSI karty SIM w danym urzadzeniu."""
-    ka, kb = _k(df["strona_a"]), _k(df["strona_b"])
-    sub = df[(ka == target) | (kb == target)]
+    sub = df[(_k(df["strona_a"]) == target) | (_k(df["strona_b"]) == target)]
     pary = pd.concat([
-        sub[ka == target][["imei_a", "imsi_a"]].rename(columns={"imei_a": "imei", "imsi_a": "imsi"}),
-        sub[kb == target][["imei_b", "imsi_b"]].rename(columns={"imei_b": "imei", "imsi_b": "imsi"}),
+        sub[_k(sub["strona_a"]) == target][["imei_a", "imsi_a"]].rename(columns={"imei_a": "imei", "imsi_a": "imsi"}),
+        sub[_k(sub["strona_b"]) == target][["imei_b", "imsi_b"]].rename(columns={"imei_b": "imei", "imsi_b": "imsi"}),
     ], ignore_index=True)
     pary = pary[~pary["imei"].isin(NIE_IMEI) & pary["imei"].notna()]
     if pary.empty:
@@ -962,18 +967,32 @@ def _rekord_pusty(operator, abonent, folder, uwagi):
         "pliki": [],
     }
 
-def _pliki_zestawu(zestaw):
-    """Listing plikow zrodlowych zestawu z sumami kontrolnymi SHA-256."""
-    out = []
-    for rola, klucz in (("wykaz polaczen", "wykaz"), ("transmisja danych", "transmisja"),
-                        ("dane abonenckie", "nazwiska"), ("wykaz BTS", "bts")):
-        p = zestaw.get(klucz)
-        if p and os.path.isfile(p):
-            try:
-                digest = sha256_pliku(p)
-            except Exception:
-                digest = "(blad odczytu)"
-            out.append({"rola": rola, "plik": os.path.basename(p), "sha256": digest})
+def _rola_pliku(nazwa):
+    n = nazwa.lower()
+    if "wykaz_polaczen" in n: return "wykaz polaczen"
+    if "transmisja" in n:     return "transmisja danych"
+    if "abonenckie" in n:     return "dane abonenckie"
+    if "bts" in n:            return "wykaz BTS"
+    return "plik zrodlowy"
+
+def _pliki_zestawu(folder):
+    """Listing WSZYSTKICH plikow zrodlowych folderu abonenta z sumami SHA-256.
+    Oględzinom poddaje sie cala przesylke — kazdy raport wymienia wszystkie
+    pliki dostarczone w folderze, niezaleznie od tego ktory numer dotycza."""
+    sciezki = []
+    for pattern in ("*.xls", "*.xlsx", "*.pdf"):
+        sciezki.extend(sorted(glob.glob(os.path.join(folder, pattern))))
+    out, seen = [], set()
+    for p in sciezki:
+        b = os.path.basename(p)
+        if b in seen:
+            continue
+        seen.add(b)
+        try:
+            digest = sha256_pliku(p)
+        except Exception:
+            digest = "(blad odczytu)"
+        out.append({"rola": _rola_pliku(b), "plik": b, "sha256": digest})
     return out
 
 def wczytaj_rekordy(root, verbose=True):
@@ -1037,7 +1056,7 @@ def wczytaj_rekordy(root, verbose=True):
                         "uwagi": "brak wykazu polaczen — tylko dane abonenckie "
                                  "(zapytanie po karcie SIM / numerze)",
                         "zrodla": [etykieta],
-                        "pliki": _pliki_zestawu(zestaw),
+                        "pliki": _pliki_zestawu(folder),
                     })
                     print(f"    -> {operator}/{etykieta}: tryb=msisdn cel={numer_ab} | "
                           f"tylko dane abonenckie | SIM: {wpis_ab.get('sim', '-')} | "
@@ -1116,7 +1135,7 @@ def wczytaj_rekordy(root, verbose=True):
                 "historia": historia, "bts_map": bts_map,
                 "okres_od": od, "okres_do": do, "uwagi": uwagi,
                 "zrodla": [etykieta],
-                "pliki": _pliki_zestawu(zestaw),
+                "pliki": _pliki_zestawu(folder),
             })
             print(f"    -> {operator}/{etykieta}: tryb={tryb} cel={cel or '-'} | "
                   f"rekordow: {len(df)} | okres: {od or '-'} - {do or '-'}"
@@ -1152,7 +1171,9 @@ def wczytaj_rekordy(root, verbose=True):
             if r["uwagi"] and not r2["uwagi"]:
                 r2["uwagi"] = r["uwagi"]
             r2["zrodla"].extend(r["zrodla"])
-            r2["pliki"].extend(r["pliki"])
+            for pz in r["pliki"]:
+                if pz not in r2["pliki"]:
+                    r2["pliki"].append(pz)
     for k in kolejnosc:
         r2 = scalone[k]
         if len(r2["zrodla"]) > 1:
@@ -1357,8 +1378,8 @@ def raport_per_numer(r, outdir, txt=False, dodatkowe_nazwiska=None, dodatkowe_hi
 
     target_dir = os.path.join(outdir, target)
     os.makedirs(target_dir, exist_ok=True)
-    p_csv = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.csv")
-    generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, p_csv,
+    sciezki = [os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.csv")]
+    generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, sciezki[0],
                        historia_abonentow, historia_kontaktow, bloki=bloki, uwagi=uwagi,
                        preambula=preambula_ogledzin_csv(r))
     if rdocx is not None:
@@ -1367,6 +1388,7 @@ def raport_per_numer(r, outdir, txt=False, dodatkowe_nazwiska=None, dodatkowe_hi
             rdocx.raport_numer_docx(p_docx, target, kp, ks, bts, imei_df, abonent, inet,
                                     okres_od, okres_do, historia_abonentow, historia_kontaktow,
                                     bloki, uwagi, _pre_dane(r))
+            sciezki.append(p_docx)
         except Exception as e:
             print(f"    [!] {r['abonent']}: blad raportu DOCX: {e}")
     if txt:
@@ -1377,8 +1399,8 @@ def raport_per_numer(r, outdir, txt=False, dodatkowe_nazwiska=None, dodatkowe_hi
             f.write(generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet,
                                        okres_od, okres_do, historia_abonentow,
                                        historia_kontaktow, bloki=bloki, uwagi=uwagi))
-        return p_txt
-    return p_csv
+        sciezki.append(p_txt)
+    return sciezki
 
 
 def raport_per_urzadzenie(r, outdir, txt=False, dodatkowe_nazwiska=None):
@@ -1403,16 +1425,17 @@ def raport_per_urzadzenie(r, outdir, txt=False, dodatkowe_nazwiska=None):
 
     target_dir = os.path.join(outdir, f"IMEI_{imei}")
     os.makedirs(target_dir, exist_ok=True)
-    p_csv = os.path.join(target_dir, f"{imei}_RAPORT_URZADZENIA.csv")
+    sciezki = [os.path.join(target_dir, f"{imei}_RAPORT_URZADZENIA.csv")]
     generuj_raport_urzadzenia_csv(
         imei, numery_df, kontakty_df, imsi_df, bts_df,
-        info["nazwa"], r["abonent"], okres_od, okres_do, p_csv, uwagi=r.get("uwagi"),
+        info["nazwa"], r["abonent"], okres_od, okres_do, sciezki[0], uwagi=r.get("uwagi"),
         preambula=preambula_ogledzin_csv(r))
     if rdocx is not None:
         try:
             p_docx = os.path.join(target_dir, f"{imei}_RAPORT_URZADZENIA.docx")
             rdocx.raport_urzadzenie_docx(p_docx, imei, numery_df, kontakty_df, imsi_df,
                                          bts_df, _pre_dane(r))
+            sciezki.append(p_docx)
         except Exception as e:
             print(f"    [!] {r['abonent']}: blad raportu DOCX: {e}")
     if txt:
@@ -1423,8 +1446,8 @@ def raport_per_urzadzenie(r, outdir, txt=False, dodatkowe_nazwiska=None):
             f.write(generuj_raport_urzadzenia_txt(
                 imei, numery_df, kontakty_df, imsi_df, bts_df,
                 info["nazwa"], r["abonent"], okres_od, okres_do, uwagi=r.get("uwagi")))
-        return p_txt
-    return p_csv
+        sciezki.append(p_txt)
+    return sciezki
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1450,7 +1473,7 @@ def analiza_krzyzowa(rekordy, outdir):
         try:
             out_docx = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.docx")
             osoby = ak.osoby_z_rekordow(msisdn_rek)
-            kom_osob = ak.komunikacja_osob(bezposrednia, osoby)
+            kom_osob = ak.komunikacja_osob(bezposrednia, osoby, rekordy=msisdn_rek)
             rdocx.raport_krzyzowy_docx(out_docx, msisdn_rek, osoby, kom_osob, wspolne, imei_df,
                                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         except Exception as e:
@@ -1464,8 +1487,11 @@ def analiza_krzyzowa(rekordy, outdir):
     print(f"  Wspolnych kontaktow osob trzecich: {len(wspolne)} numerow")
     print(f"  Wspolnych urzadzen (IMEI): {len(imei_df)}")
     print("=" * 100)
+    out_docx = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.docx")
     print(f"\n[+] RAPORT ZBIORCZY TXT: {os.path.abspath(out_txt)}")
     print(f"[+] RAPORT ZBIORCZY CSV: {os.path.abspath(out_csv)}")
+    if os.path.exists(out_docx):
+        print(f"[+] RAPORT ZBIORCZY DOCX: {os.path.abspath(out_docx)}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1528,18 +1554,19 @@ def przebieg(dane, outdir, tylko=None, bez_krzyzowej=False, txt=False):
                 if wpis not in global_historia[n]:
                     global_historia[n].append(wpis)
 
-    print("\n[+] Generowanie raportow per numer / urzadzenie (CSV" + (", +TXT" if txt else "") + "):")
+    print("\n[+] Generowanie raportow per numer / urzadzenie (CSV + DOCX" + (", +TXT" if txt else "") + "):")
     for r in rekordy:
         try:
             if r["tryb"] == "imei":
-                sciezka = raport_per_urzadzenie(r, outdir, txt=txt,
+                sciezki = raport_per_urzadzenie(r, outdir, txt=txt,
                                                 dodatkowe_nazwiska=global_nazwiska)
             else:
-                sciezka = raport_per_numer(r, outdir, txt=txt,
+                sciezki = raport_per_numer(r, outdir, txt=txt,
                                            dodatkowe_nazwiska=global_nazwiska,
                                            dodatkowe_historia=global_historia)
-            if sciezka:
-                print(f"    raport: {sciezka}")
+            if sciezki:
+                for s in sciezki:
+                    print(f"    raport: {s}")
             else:
                 print(f"    [!] {r['abonent']}: brak numeru/IMEI — raport pominiety "
                       f"({r.get('uwagi', 'brak danych identyfikujacych')})")

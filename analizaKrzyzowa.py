@@ -345,71 +345,179 @@ def wspolne_imei(rekordy):
 # (PESEL osoby / NIP-KRS firmy) laczy numery roznych operatorow w jedna
 # osobe. Bez identyfikatora osoba = pojedynczy numer.
 
+def okna_numeru(rekordy, numer):
+    """Posortowane okna waznosci abonentow numeru: (od, do, klucz, nazwa).
+    Ten sam MSISDN moze miec w roznych okresach roznych abonentow
+    (pre-paid -> post-paid, zmiana wlasciciela)."""
+    okna = []
+    for r in rekordy:
+        if r.get("tryb") == "imei" or r["numer"] != numer:
+            continue
+        for w in r["historia"].get(numer, []):
+            klucz = w.get("pesel") or w.get("nip") or f"MSISDN:{numer}"
+            okna.append((w.get("data_akt") or "", w.get("data_dezakt") or "",
+                         klucz, w.get("nazwa", "")))
+    return sorted(set(okna))
+
+def kto_w_oknie(okna, numer, data):
+    """Klucz osoby + nazwa dla zdarzenia z daty `data`; poza oknami -> numer bez identyfikacji."""
+    for od, do, klucz, nazwa in okna:
+        if (not od or data >= od) and (not do or data <= do):
+            return klucz, nazwa
+    return f"MSISDN:{numer}", ""
+
+def _dodaj_do_osoby(osoby, klucz, numer, operator, zrodlo, sub, nazwa):
+    o = osoby.setdefault(klucz, {
+        "klucz": klucz, "numery": [], "operatory": set(),
+        "zrodla": [], "nazwa": "", "imei": set(), "zdarzen": 0,
+        "okres_od": "", "okres_do": "",
+    })
+    if numer not in o["numery"]:
+        o["numery"].append(numer)
+    o["operatory"].add(operator)
+    if zrodlo not in o["zrodla"]:
+        o["zrodla"].append(zrodlo)
+    o["zdarzen"] += len(sub)
+    if not o["nazwa"] and nazwa:
+        o["nazwa"] = nazwa
+    if not sub.empty:
+        ka = sub["a_key"] if "a_key" in sub.columns else sub["strona_a"].map(klucz_numer)
+        kb = sub["b_key"] if "b_key" in sub.columns else sub["strona_b"].map(klucz_numer)
+        for kol_imei, maska in (("imei_a", ka == numer), ("imei_b", kb == numer)):
+            s = sub[maska][kol_imei]
+            s = s[~s.isin(NIE_IMEI) & s.notna()]
+            o["imei"].update(s.unique())
+        od, do = okres_bilingow(sub)
+        if od and (not o["okres_od"] or od < o["okres_od"]):
+            o["okres_od"] = od
+        if do and (not o["okres_do"] or do > o["okres_do"]):
+            o["okres_do"] = do
+
 def osoby_z_rekordow(rekordy):
     """Zwraca {klucz_osoby: {...}} — osoby/firmy z numerami, IMEI, zdarzeniami."""
     osoby = {}
     for r in rekordy:
         if r.get("tryb") == "imei" or not r["numer"]:
             continue
-        klucz = r.get("identyfikator") or f"MSISDN:{r['numer']}"
-        o = osoby.setdefault(klucz, {
-            "klucz": klucz, "numery": [], "operatory": set(),
-            "zrodla": [], "nazwa": "", "imei": set(), "zdarzen": 0,
-            "okres_od": "", "okres_do": "",
-        })
-        o["numery"].append(r["numer"])
-        o["operatory"].add(r["operator"])
-        o["zrodla"].append(r["abonent"])
-        o["zdarzen"] += len(r["df"])
-        if not o["nazwa"]:
-            d = ab.dane_abonenta(r["numer"], r["nazwiska_map"])
-            o["nazwa"] = d.get("nazwa", "")
-        df = r["df"]
-        if not df.empty:
-            ka = df["a_key"] if "a_key" in df.columns else df["strona_a"].map(klucz_numer)
-            kb = df["b_key"] if "b_key" in df.columns else df["strona_b"].map(klucz_numer)
-            for kol_imei, maska in (("imei_a", ka == r["numer"]), ("imei_b", kb == r["numer"])):
-                s = df[maska][kol_imei]
-                s = s[~s.isin(NIE_IMEI) & s.notna()]
-                o["imei"].update(s.unique())
-            od, do = okres_bilingow(df)
-            if od and (not o["okres_od"] or od < o["okres_od"]):
-                o["okres_od"] = od
-            if do and (not o["okres_do"] or do > o["okres_do"]):
-                o["okres_do"] = do
+        numer = r["numer"]
+        df = r["df"].reset_index(drop=True)
+        hist = r["historia"].get(numer, [])
+        okna = [(w, w.get("data_akt") or "", w.get("data_dezakt") or "")
+                for w in hist if w.get("data_akt") or w.get("data_dezakt")]
+        if len(okna) >= 2:
+            # Ten sam numer, kilku abonentow w roznych okresach — zdarzenia
+            # przypisujemy do abonenta wg daty zdarzenia (Ważne od/do).
+            przypisane = pd.Series(False, index=df.index)
+            for w, od_ok, do_ok in sorted(okna, key=lambda x: x[1]):
+                klucz = w.get("pesel") or w.get("nip") or f"MSISDN:{numer}"
+                maska = ~przypisane
+                if od_ok:
+                    maska &= df["data"] >= od_ok
+                if do_ok:
+                    maska &= df["data"] <= do_ok
+                sub = df[maska]
+                przypisane = przypisane | maska
+                _dodaj_do_osoby(osoby, klucz, numer, r["operator"], r["abonent"],
+                                sub, w.get("nazwa", ""))
+            sub = df[~przypisane]
+            if not sub.empty:
+                # zdarzenia poza wszystkimi oknami — abonent nierozpoznany
+                _dodaj_do_osoby(osoby, f"MSISDN:{numer}", numer, r["operator"],
+                                r["abonent"], sub, "")
+        else:
+            klucz = r.get("identyfikator") or f"MSISDN:{numer}"
+            d = ab.dane_abonenta(numer, r["nazwiska_map"])
+            _dodaj_do_osoby(osoby, klucz, numer, r["operator"], r["abonent"], df,
+                            d.get("nazwa", ""))
     return osoby
 
-def komunikacja_osob(bezposrednia, osoby):
-    """Agregacja komunikacji bezposredniej z par numerow na pary OSOB."""
-    numer2osoba = {}
-    for klucz, o in osoby.items():
-        for n in o["numery"]:
-            numer2osoba[klucz_numer(n)] = klucz
+def komunikacja_osob(bezposrednia, osoby, rekordy=None):
+    """Agregacja komunikacji bezposredniej na pary OSOB z uwzglednieniem
+    OKRESOW waznosci abonentow: zdarzenie przypisujemy do osoby, ktora
+    uzywala numeru w dacie zdarzenia (ten sam numer mial roznych abonentow
+    w roznych okresach). Bez rekordow = stara agregacja po numerach."""
     agg = {}
-    if bezposrednia.empty:
-        return pd.DataFrame()
-    for _, r in bezposrednia.iterrows():
-        ko = numer2osoba.get(klucz_numer(r["numer_od"]))
-        kd = numer2osoba.get(klucz_numer(r["numer_do"]))
-        if not ko or not kd:
-            continue
-        a = agg.setdefault((ko, kd), {"voice": 0, "proby": 0, "sms_mms": 0, "razem": 0,
-                                      "zakres_od": None, "zakres_do": None})
-        a["voice"] += r["voice"]; a["proby"] += r["proby"]
-        a["sms_mms"] += r["sms_mms"]; a["razem"] += r["razem"]
-        zo, zd = r["zakres_od"], r["zakres_do"]
-        if zo and (a["zakres_od"] is None or zo < a["zakres_od"]):
-            a["zakres_od"] = zo
-        if zd and (a["zakres_do"] is None or zd > a["zakres_do"]):
-            a["zakres_do"] = zd
+
+    if rekordy is not None:
+        # Przypisanie na poziomie zdarzen (poprawne przy zmianach abonenta)
+        okna_cache = {}
+        def _okna(n):
+            if n not in okna_cache:
+                okna_cache[n] = okna_numeru(rekordy, n)
+            return okna_cache[n]
+
+        def _bump(ko, kd, naz_o, naz_d, ev):
+            a = agg.setdefault((ko, kd), {"voice": 0, "proby": 0, "sms_mms": 0, "razem": 0,
+                                          "zakres_od": None, "zakres_do": None,
+                                          "_no": naz_o, "_nd": naz_d})
+            typ = ev["typ"]
+            if typ == "VOICE":
+                a["voice"] += 1
+            elif typ == "PRÓBA":
+                a["proby"] += 1
+            elif typ in ("SMS", "MMS"):
+                a["sms_mms"] += 1
+            a["razem"] += 1
+            d = ev["data"]
+            if a["zakres_od"] is None or d < a["zakres_od"]:
+                a["zakres_od"] = d
+            if a["zakres_do"] is None or d > a["zakres_do"]:
+                a["zakres_do"] = d
+
+        numery = {r["numer"] for r in rekordy
+                  if r.get("tryb") != "imei" and r["numer"]}
+        for r in rekordy:
+            if r.get("tryb") == "imei" or not r["numer"]:
+                continue
+            df = r["df"]
+            if df.empty:
+                continue
+            ka = df["a_key"] if "a_key" in df.columns else df["strona_a"].map(klucz_numer)
+            kb = df["b_key"] if "b_key" in df.columns else df["strona_b"].map(klucz_numer)
+            nx = r["numer"]
+            for _, ev in df[(ka == nx) & (kb.isin(numery))].iterrows():
+                ny = kb.loc[ev.name] if hasattr(ev, "name") else None
+                ko, no = kto_w_oknie(_okna(nx), nx, ev["data"])
+                kd, nd = kto_w_oknie(_okna(ny), ny, ev["data"])
+                _bump(ko, kd, no, nd, ev)
+            for _, ev in df[(kb == nx) & (ka.isin(numery))].iterrows():
+                ny = ka.loc[ev.name] if hasattr(ev, "name") else None
+                ko, no = kto_w_oknie(_okna(nx), nx, ev["data"])
+                kd, nd = kto_w_oknie(_okna(ny), ny, ev["data"])
+                _bump(ko, kd, no, nd, ev)
+    else:
+        # Agregacja po numerach (bez danych zrodlowych)
+        numer2osoba = {}
+        for klucz, o in osoby.items():
+            for n in o["numery"]:
+                numer2osoba[klucz_numer(n)] = klucz
+        if bezposrednia.empty:
+            return pd.DataFrame()
+        for _, r in bezposrednia.iterrows():
+            ko = numer2osoba.get(klucz_numer(r["numer_od"]))
+            kd = numer2osoba.get(klucz_numer(r["numer_do"]))
+            if not ko or not kd:
+                continue
+            a = agg.setdefault((ko, kd), {"voice": 0, "proby": 0, "sms_mms": 0, "razem": 0,
+                                          "zakres_od": None, "zakres_do": None,
+                                          "_no": "", "_nd": ""})
+            a["voice"] += r["voice"]; a["proby"] += r["proby"]
+            a["sms_mms"] += r["sms_mms"]; a["razem"] += r["razem"]
+            zo, zd = r["zakres_od"], r["zakres_do"]
+            if zo and (a["zakres_od"] is None or zo < a["zakres_od"]):
+                a["zakres_od"] = zo
+            if zd and (a["zakres_do"] is None or zd > a["zakres_do"]):
+                a["zakres_do"] = zd
+
     wiersze = []
     for (ko, kd), a in agg.items():
         wiersze.append({
-            "od_osoba": osoby[ko]["nazwa"] or "(brak danych)",
-            "od_klucz": ko, "do_osoba": osoby[kd]["nazwa"] or "(brak danych)",
+            "od_osoba": a.get("_no") or (osoby.get(ko, {}).get("nazwa") if ko in osoby else "") or "(brak danych)",
+            "od_klucz": ko, "do_osoba": a.get("_nd") or (osoby.get(kd, {}).get("nazwa") if kd in osoby else "") or "(brak danych)",
             "do_klucz": kd,
             "ta_sama_osoba": "TAK" if ko == kd else "",
-            **a,
+            "voice": a["voice"], "proby": a["proby"], "sms_mms": a["sms_mms"],
+            "razem": a["razem"], "zakres_od": a["zakres_od"], "zakres_do": a["zakres_do"],
         })
     if not wiersze:
         return pd.DataFrame()
@@ -463,7 +571,7 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
     L.append("")
 
     # SEKCJA B — bezposrednia (agregacja do poziomu osob/firm)
-    kom_osob = komunikacja_osob(bezposrednia, osoby)
+    kom_osob = komunikacja_osob(bezposrednia, osoby, rekordy=rekordy)
     L.append("-" * 110)
     L.append("  SEKCJA B: KOMUNIKACJA MIEDZY OSOBAMI / FIRMAMI (agregacja po PESEL / NIP-KRS)")
     L.append("-" * 110)
@@ -525,7 +633,7 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         w.writerow(["ANALIZA KRZYZOWA BILINGOW"])
         w.writerow([])
         osoby = osoby_z_rekordow(rekordy)
-        kom_osob = komunikacja_osob(bezposrednia, osoby)
+        kom_osob = komunikacja_osob(bezposrednia, osoby, rekordy=rekordy)
         w.writerow(["OSOBY / FIRMY (grupowanie po PESEL / NIP-KRS)"])
         w.writerow(["Lp", "Nazwa / Firma", "PESEL/NIP-KRS", "Numery (MSISDN)", "Operatorzy",
                     "Urzadzenia (IMEI)", "Liczba zdarzen"])

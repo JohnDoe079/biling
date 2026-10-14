@@ -1,6 +1,30 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
 
+## 2026-10-14 23:12
+### Dodane
+- Rozróznianie OKRESOW waznosci abonentow tego samego numeru (dane abonenckie
+  z Ważne od/do): zdarzenia w raporcie krzyzowym przypisywane sa do osoby,
+  ktora uzywala numeru w dacie zdarzenia. Sekcja A osob liczona per okres;
+  sekcja B (komunikacja miedzy osobami) liczona per zdarzenie z uwzglednieniem
+  okien. Zdarzenia poza wszystkimi oknami trafiaja do osoby "MSISDN:<numer>
+  (brak danych)". Raport per numer nadal dzieli sie na bloki per abonent.
+  Folder abonenta nadal moze obejmowac wiele numerow/SIM/IMEI (prefiksy 1QR..6QR).
+
+## 2026-10-14 23:01
+### Zmienione
+- Konsola: wypisywane sa wszystkie wygenerowane sciezki (CSV, DOCX, TXT)
+  oraz linia RAPORT ZBIORCZY DOCX.
+- Usunieto ostrzezenia pandas z konsoli (FutureWarning fillna/downcasting,
+  UserWarning reindexowania maski w imei_dla_numeru).
+
+## 2026-10-14 22:52
+### Zmienione
+- Preambula oględzin: listing PLIKOW ZRODLOWYCH obejmuje teraz WSZYSTKIE pliki
+  dostarczone w folderze abonenta (nie tylko te przypisane do danego numeru);
+  oględzinom poddaje sie cala przesylke. Dedup przy scalaniu zrodel.
+- Konsola: etykieta generowania raportow "CSV + DOCX" (bylo "CSV").
+
 ## 2026-10-14 21:09
 ### Dodane
 - Generowanie raportow DOCX obok CSV (nowy modul raporty_docx.py, wymaga
