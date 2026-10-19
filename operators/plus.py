@@ -26,7 +26,7 @@ import re
 
 import pandas as pd
 
-from common import klucz_numer
+from common import klucz_numer, normalizuj_strone
 from operators.base import parser_niedosteppny
 
 
@@ -91,12 +91,15 @@ _MAPA_TYPOW = {
     "FORW": "FWD",
 }
 
-# Smieciowe wartosci BTS w exportach Plusa (np. 'Numer B przypisany do sieci: Plus')
-_RE_BTS_SMIECI = re.compile(r"^numer\s+[abc]\s+przypisany", re.IGNORECASE)
+# Smieciowe wartosci BTS w exportach Plusa:
+#   'Numer B przypisany do sieci: Plus', 'Abonent nie byl w sieci Netia', itp.
+_RE_BTS_SMIECI = re.compile(
+    r"(numer\s+[abc]\s+przypisany|przypisany\s+do\s+sieci|nie\s+by[lł]\s+w\s+sieci|"
+    r"nieobs[lł]ugiwany)", re.IGNORECASE)
 
 def _czysto_bts(v):
     s = _czysto(v)
-    if _RE_BTS_SMIECI.match(s):
+    if _RE_BTS_SMIECI.search(s):
         return ""
     return s
 
@@ -150,11 +153,11 @@ def parse_plus(path: str, verbose: bool = False):
             "czas": poczatek.dt.strftime("%H:%M:%S"),
             "czas_trwania": czas_trwania,
             "typ": typ,
-            "strona_a": kol("a msisdn").map(_czysto),
+            "strona_a": kol("a msisdn").map(_czysto).map(normalizuj_strone),
             "bts_a": kol("a bts address").map(_czysto_bts),
             "imei_a": kol("a imei/a esn", "a imei").map(_czysto),
             "imsi_a": kol("a imsi").map(_czysto),
-            "strona_b": strona_b,
+            "strona_b": strona_b.map(normalizuj_strone),
             "bts_b": kol("b bts address").map(_czysto_bts),
             "imei_b": kol("b imei/b esn", "b imei").map(_czysto),
             "imsi_b": kol("b imsi").map(_czysto),
@@ -166,7 +169,7 @@ def parse_plus(path: str, verbose: bool = False):
             "czas": poczatek.dt.strftime("%H:%M:%S"),
             "czas_trwania": czas_trwania,
             "typ": "DATA",
-            "strona_a": kol("msisdn").map(_czysto),
+            "strona_a": kol("msisdn").map(_czysto).map(normalizuj_strone),
             "bts_a": kol("bts address").map(_czysto_bts),
             "imei_a": kol("imei").map(_czysto),
             "imsi_a": kol("imsi").map(_czysto),
@@ -180,15 +183,6 @@ def parse_plus(path: str, verbose: bool = False):
     out = out[out["data"].notna() & (out["data"] != "NaT")]
     out = out.reset_index(drop=True)
 
-    # W exportach Plusa KOLUMNY "A ..." ZAWIERAJA ZAWSZE DANE STRONY ANALIZOWANEJ
-    # (abonenta z zapytania) — niezaleznie od tego, czy stoi on w A czy B MSISDN.
-    # Jesli abonent jest w B: przenosimy jego IMEI/IMSI/BTS z kolumn A do B.
-    if msisdn and not out.empty:
-        kl = klucz_numer(msisdn)
-        b_ab = out["strona_b"].map(klucz_numer) == kl
-        cols3 = ["imei_b", "imsi_b", "bts_b"]
-        out.loc[b_ab, cols3] = out.loc[b_ab, ["imei_a", "imsi_a", "bts_a"]].values
-        out.loc[b_ab, ["imei_a", "imsi_a", "bts_a"]] = ""
 
     if verbose:
         print(f"[plus] {os.path.basename(path)}: {len(out)} rekordow, msisdn={msisdn}")
@@ -199,7 +193,7 @@ def parse_plus(path: str, verbose: bool = False):
 # DANE ABENENCKIE  ->  mapping nazwisk + historia zmian
 # ─────────────────────────────────────────────────────────────────────
 
-_TEKST_BRAK_ABONENTA = "nie obsługiwany przez polkomtel"
+_RE_BRAK_ABONENTA = re.compile(r"nie\s*obs[lł]ugiwany", re.IGNORECASE)
 
 def parse_plus_nazwiska(path: str, verbose: bool = False):
     """Zwraca (mapping, historia) jak parser Orange."""
@@ -228,8 +222,8 @@ def parse_plus_nazwiska(path: str, verbose: bool = False):
         if not num:
             continue
         nazwa = nazwa_s.iloc[i]
-        if _TEKST_BRAK_ABONENTA.lower() in nazwa.lower():
-            nazwa = ""  # numer nieobslugiwany w tym okresie
+        if _RE_BRAK_ABONENTA.search(nazwa):
+            nazwa = ""  # numer nieobslugiwany w tym okresie (dowolna siec)
         wpis = {
             "nazwa": nazwa,
             "adres": adres_s.iloc[i],

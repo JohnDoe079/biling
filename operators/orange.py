@@ -5,7 +5,8 @@ import re
 
 import pandas as pd
 
-from common import pdf_to_text, normalizuj_numer, klucz_numer, autodetect_pliki
+from common import (pdf_to_text, normalizuj_numer, klucz_numer, autodetect_pliki,
+                    normalizuj_strone)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -36,6 +37,18 @@ _ORANGE_SKIP = (
     "DATA AKT", "DATA DEZAKT", "TYP", "ABONENT", "PESEL", "REGON",
     "KOD", "MIASTO", "GŁOWNY", "Przeniesiony do innego operatora",
 )
+
+
+
+# Smieciowe wartosci w polach BTS (np. 'Abonent nie byl w sieci Netia')
+_RE_BTS_SMIECI_O = re.compile(
+    r"(przypisany\s+do\s+sieci|nie\s+by[lł]\s+w\s+sieci|nieobs[lł]ugiwany)", re.IGNORECASE)
+
+def _czysto_bts_o(v):
+    s = "" if v is None else str(v).strip()
+    if _RE_BTS_SMIECI_O.search(s):
+        return ""
+    return s
 
 def parse_orange(path: str, verbose: bool = False):
     rows, fails, msisdn = [], [], None
@@ -69,6 +82,11 @@ def parse_orange(path: str, verbose: bool = False):
             imsi_b=imsi_b,
         ))
     df = pd.DataFrame(rows)
+    if not df.empty:
+        df["bts_a"] = df["bts_a"].map(_czysto_bts_o)
+        df["bts_b"] = df["bts_b"].map(_czysto_bts_o)
+        df["strona_a"] = df["strona_a"].map(normalizuj_strone)
+        df["strona_b"] = df["strona_b"].map(normalizuj_strone)
     if verbose and fails:
         print(f"[orange] nie sparsowano {len(fails)} linii:")
         for f in fails[:10]:

@@ -1,6 +1,64 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
 
+## 2026-10-19 22:10
+### Zmienione
+- Normalizacja stron przy PARSOWANIU (Plus i Orange): 48123456789 -> 123456789,
+  wiec kontakt zapisany z prefixem 48 nie jest liczony jako osobny numer
+- Filtr nazw abonentow rozszerzony: kazdy "nie obslugiwany" (Polkomtel, Netia, inne)
+  znika z pola nazwy zamiast wyswietlac komunikat sieci
+
+## 2026-10-19 22:00
+### Zmienione
+- KLUCZOWE: usuniety "swap" kolumn A/B w parserze Plusa — kolumny opisuja strony
+  ZGODNIE Z POZYCJA (A = inicjujacy, B = odbierajacy). Poprzednio abonentowi
+  przypisywano IMEI/IMSI kontrahentow z sieci Plus (wynikalo to fikcyjne
+  "kilka urzadzen" zamiast 1)
+
+## 2026-10-19 21:25
+### Zmienione
+- SEKCJA B (komunikacja bezposrednia): format zgodny z sekcja C —
+  bloki par numerow z wierszami per abonent: numer, drugi numer, okres,
+  razem, voice przych/wych, proby, SMS, DATA; flaga "ta sama osoba/firma" w naglowku pary
+
+## 2026-10-19 21:20
+### Zmienione
+- SEKCJA A raportu krzyzowego: zamiast sumy wszystkich zdarzen telefonu
+  liczniki zdarzen KRZYZOWYCH: "Z innymi" (sekcja B) i "Z kontakt." (sekcja C)
+
+## 2026-10-19 21:10
+### Zmienione
+- SEKCJA C: kolumna abonenta = TYLKO numer telefonu; naglowek "Zdarzen z kontaktem"
+  (jasne rozroznienie od "Liczba zdarzen" z sekcji A = wszystkie zdarzenia billingu)
+
+## 2026-10-19 20:55
+### Dodane
+- SEKCJA C krzyzowa rozbita per abonent: okres kontaktow, przych/wych dla voice,
+  prob, SMS/MMS oraz liczba transmisji DATA; nazwa kontaktu jesli znana z danych
+### Zmienione
+- Filtr smieci w polach BTS (Plus i Orange): komunikaty typu "przypisany do sieci",
+  "nie byl w sieci Netia", "nieobslugiwany" sa czyszczone (nie pojawiaja sie w raportach BTS)
+
+## 2026-10-19 20:45
+### Zmienione
+- Struktura wynikow poprawiona: output/<data_GGMM>/<numery>/ z normalnymi bilingami
+  OBOK output/<data_GGMM>/krzyzowy/ zawierajacego WYŁACZNIE raporty krzyzowe
+  (wczesniej per-numer ladowaly sie do srodka krzyzowy/)
+
+## 2026-10-19 20:35
+### Dodane
+- RAPORT DOCX per numer (sekcje 1-6, tabele, historia abonenta; wymaga python-docx)
+- Struktura wynikow: output/<RRRR-MM-DD_GGMM>/<numery>/ oraz output/<...>/krzyzowy/
+  (raporty per numer + zbiorczy) przy analizie krzyzowej
+### Zmienione
+- Enter przy pytaniu o analize = analiza WSZYSTKICH folderow (domyslnie badamy wszystko)
+- Przywrocony DOCX usuniety wczesniej przez blad; domyslny outdir to output/<data_GGMM>
+
+## 2026-10-19 20:25
+### Naprawione
+- Przywrocony blok if __name__ == "__main__" w analizaBilling.py
+  (skrypt konczyl sie bez wyjscia po usunieciu starego trybu recznego)
+
 ## 2026-10-19 20:15
 ### Usuniete
 - Stary tryb reczny (wybor operatora 1-4, wpisywanie sciezek, zapytaj_o_plik) —

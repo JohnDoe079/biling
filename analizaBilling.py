@@ -797,18 +797,154 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
     generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, raport_csv_path,
                        historia_abonentow, historia_kontaktow, bloki=bloki, imsi_df=imsi_df)
 
+    raport_docx_path = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
+    ok_docx = generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do,
+                                  raport_docx_path, historia_abonentow, historia_kontaktow,
+                                  bloki=bloki, imsi_df=imsi_df)
+
     print("\n" + raport_txt)
-    print(f"\n[+] RAPORT KONCOWY TXT: {os.path.abspath(raport_txt_path)}")
-    print(f"[+] RAPORT KONCOWY CSV: {os.path.abspath(raport_csv_path)}")
+    print(f"\n[+] RAPORT KONCOWY TXT:  {os.path.abspath(raport_txt_path)}")
+    print(f"[+] RAPORT KONCOWY CSV:  {os.path.abspath(raport_csv_path)}")
+    if ok_docx:
+        print(f"[+] RAPORT KONCOWY DOCX: {os.path.abspath(raport_docx_path)}")
+
+
+
+def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, outpath,
+                        historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None):
+    """Raport DOCX — wymaga python-docx. Zwraca True jesli wygenerowano."""
+    try:
+        from docx import Document
+        from docx.shared import Pt
+    except ImportError:
+        print("[!] Brak biblioteki 'python-docx' — raport DOCX pominiety. Zainstaluj: pip install python-docx")
+        return False
+
+    doc = Document()
+    doc.add_heading(f"RAPORT KONCOWY — ANALIZA BILINGOW", 0)
+    doc.add_paragraph(f"Numer: {target} | Operator danych: {abonent.get('operator', '')}")
+    doc.add_paragraph(f"Nazwa: {abonent.get('nazwa', '') or '(brak danych)'} | "
+                      f"PESEL/REGON: {abonent.get('pesel', '') or '-'}")
+    if abonent.get("adres"):
+        doc.add_paragraph(f"Adres: {abonent['adres']}")
+    doc.add_paragraph(f"Okres analizy: {okres_od} - {okres_do}")
+    if historia_abonentow:
+        doc.add_heading("HISTORIA ZMIAN ABONENTA", 1)
+        for numer, wpisy in historia_abonentow.items():
+            doc.add_paragraph(f"Numer {numer}:", style="List Bullet")
+            for w in wpisy:
+                doc.add_paragraph(
+                    f"{w.get('data_akt', '')} - {w.get('data_dezakt', '') or 'obecnie'}: "
+                    f"{w.get('nazwa', '')} | PESEL: {w.get('pesel', '') or '-'}", style="List Bullet 2")
+
+    doc.add_heading("SEKCJA 1: KONTAKTY GLOSOWE + PROBY", 1)
+    if kp is not None and not kp.empty:
+        t = doc.add_table(rows=1, cols=7)
+        t.style = "Light Grid Accent 1"
+        for i, h in enumerate(["Lp", "Numer kontaktu", "Nazwa", "Wych", "Przych", "Proby", "Laczny czas"]):
+            t.rows[0].cells[i].text = h
+        for lp, (_, r) in enumerate(kp.iterrows(), 1):
+            c = t.add_row().cells
+            c[0].text = str(lp)
+            c[1].text = str(r.get("numer_kontaktu", ""))
+            c[2].text = str(r.get("nazwa_kontaktu", ""))
+            c[3].text = str(r.get("voice_wychodzace", 0))
+            c[4].text = str(r.get("voice_przychodzace", 0))
+            c[5].text = str(r.get("proby_wychodzace", 0) + r.get("proby_przychodzace", 0))
+            c[6].text = fmt_czas(r.get("laczny_czas", 0))
+    else:
+        doc.add_paragraph("Brak zdarzen glosowych i prob w tym okresie.")
+
+    doc.add_heading("SEKCJA 2: SMS/MMS", 1)
+    if ks is not None and not ks.empty:
+        t = doc.add_table(rows=1, cols=5)
+        t.style = "Light Grid Accent 1"
+        for i, h in enumerate(["Lp", "Numer kontaktu", "Nazwa", "Wych", "Przych"]):
+            t.rows[0].cells[i].text = h
+        for lp, (_, r) in enumerate(ks.iterrows(), 1):
+            c = t.add_row().cells
+            c[0].text = str(lp)
+            c[1].text = str(r.get("numer_kontaktu", ""))
+            c[2].text = str(r.get("nazwa_kontaktu", ""))
+            c[3].text = str(r.get("sms_wychodzace", 0))
+            c[4].text = str(r.get("sms_przychodzace", 0))
+    else:
+        doc.add_paragraph("Brak zdarzen SMS/MMS w tym okresie.")
+
+    doc.add_heading("SEKCJA 3: TRANSMISJA DANYCH (INTERNET)", 1)
+    if inet:
+        doc.add_paragraph(
+            f"Laczna liczba sesji: {inet.get('laczna_liczba', 0)} | "
+            f"Laczny czas: {fmt_czas(inet.get('laczny_czas', 0))} | "
+            f"Transfer: {inet.get('laczny_transfer_mb', 0):.2f} MB")
+    else:
+        doc.add_paragraph("Brak zdarzen transmisji danych.")
+
+    doc.add_heading("SEKCJA 4: STACJE BAZOWE (BTS)", 1)
+    if bts is not None and not bts.empty:
+        t = doc.add_table(rows=1, cols=4)
+        t.style = "Light Grid Accent 1"
+        for i, h in enumerate(["Lp", "Kod BTS", "Adres", "Liczba polaczen"]):
+            t.rows[0].cells[i].text = h
+        for lp, (_, r) in enumerate(bts.iterrows(), 1):
+            c = t.add_row().cells
+            c[0].text = str(lp)
+            c[1].text = str(r.get("bts", ""))
+            c[2].text = str(r.get("adres", ""))
+            c[3].text = str(r.get("liczba_polaczen", ""))
+    else:
+        doc.add_paragraph("Brak danych BTS.")
+
+    doc.add_heading("SEKCJA 5: URZADZENIA (IMEI)", 1)
+    if imei_df is not None and not imei_df.empty:
+        t = doc.add_table(rows=1, cols=3)
+        t.style = "Light Grid Accent 1"
+        for i, h in enumerate(["Lp", "IMEI", "Liczba zdarzen"]):
+            t.rows[0].cells[i].text = h
+        for lp, (_, r) in enumerate(imei_df.iterrows(), 1):
+            c = t.add_row().cells
+            c[0].text = str(lp)
+            c[1].text = str(r["imei"])
+            c[2].text = str(r["liczba_zdarzen"])
+        if len(imei_df) > 1:
+            doc.add_paragraph(f"UWAGA: Wykryto {len(imei_df)} roznych urzadzen (IMEI) dla numeru {target}.")
+    else:
+        doc.add_paragraph("Brak danych IMEI.")
+
+    doc.add_heading("SEKCJA 6: KARTY SIM (IMSI)", 1)
+    if imsi_df is not None and not imsi_df.empty:
+        t = doc.add_table(rows=1, cols=3)
+        t.style = "Light Grid Accent 1"
+        for i, h in enumerate(["Lp", "IMSI", "Liczba zdarzen"]):
+            t.rows[0].cells[i].text = h
+        for lp, (_, r) in enumerate(imsi_df.iterrows(), 1):
+            c = t.add_row().cells
+            c[0].text = str(lp)
+            c[1].text = str(r["imsi"])
+            c[2].text = str(r["liczba_zdarzen"])
+        if len(imsi_df) > 1:
+            doc.add_paragraph(f"UWAGA: Wykryto {len(imsi_df)} roznych kart SIM (IMSI) dla numeru {target}.")
+    else:
+        doc.add_paragraph("Brak danych IMSI.")
+
+    doc.save(outpath)
+    return True
+
+def domyslny_outdir():
+    """output/RRRR-MM-DD_GGMM — folder wynikowy nazwany data + godzina."""
+    from datetime import datetime
+    return os.path.join("./output", datetime.now().strftime("%Y-%m-%d_%H%M"))
 
 
 def main():
     ap = argparse.ArgumentParser(description="Analiza bilingow — autodetekcja")
     ap.add_argument("--folder", help="pojedynczy folder abonenta (automatycznie input/<operator>/<abonent>)")
     ap.add_argument("--numer", help="numer analizowany (domyslnie: auto-detekcja z naglowka)")
-    ap.add_argument("--outdir", default="./raport_bilingow")
+    ap.add_argument("--outdir", default=None, help="folder wynikowy (domyslnie: output/RRRR-MM-DD_GGMM)")
     ap.add_argument("--dane", default="./input", help="katalog glowny z danymi (domyslnie: ./input)")
     args = ap.parse_args()
+    if not args.outdir:
+        args.outdir = domyslny_outdir()
 
     print("=== Analiza bilingow — toolkit (autodetekcja) ===")
 
@@ -845,11 +981,13 @@ def main():
 
     while True:
         odp = input("\nAnalizowac wszystkich (analiza krzyzowa)? [t/n]: ").strip().lower()
-        if odp in ("t", "tak", "y", "yes"):
+        if odp in ("t", "tak", "y", "yes") or odp == "":
+            if odp == "":
+                print("(Enter = analiza wszystkich)")
             import analizaKrzyzowa
-            analizaKrzyzowa.przebieg(args.dane, "./raport_krzyzowy")
+            analizaKrzyzowa.przebieg(args.dane, args.outdir)
             return
-        if odp in ("n", "nie", ""):
+        if odp in ("n", "nie"):
             break
 
     print("\nWybierz folder do analizy pojedynczego abonenta:")
@@ -871,3 +1009,7 @@ def main():
                     bts_map_pre=bts_f or {}, msisdn_pre=ms_f)
             return
         print("  Nieprawidlowy wybor.")
+
+
+if __name__ == "__main__":
+    main()

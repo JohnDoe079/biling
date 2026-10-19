@@ -1,5 +1,5 @@
 # Biling Toolkit — analiza bilingow multi-operator
-WERSJA: 2026-10-19 20:15  (format wersji: RRRR-MM-DD GG:MM)
+WERSJA: 2026-10-19 22:10  (format wersji: RRRR-MM-DD GG:MM)
 
 ## CEL PROJEKTU
 Narzedzie do analizy bilingow od 4 operatorow (Orange, T-Mobile, Plus, Play),
@@ -34,8 +34,8 @@ dostarczanych w roznych formatach, z dwoma poziomami analizy:
 - [x] PLUS (Polkomtel) — Excel .xls/.xlsx, przetestowany na realnych danych:
        naglowek wyszukiwany dynamicznie (wiersz "Parametr"), numer abonenta z "Parametrow zadania",
        typy MOC/PTC/POC/MTC/PBXO/UCA/SMO/SMT/MMR/UCAT/UCAM/FORW mapowane na VOICE/PRÓBA/SMS/MMS/FWD,
-       KLUCZ FORMATU: kolumny "A IMEI/A IMSI/A BTS ADDRESS" = zawsze strona analizowana
-       (parser przenosi dane na wlasciwa strone), FORW: abonent z kolumny C przenoszony do strony B,
+       KLUCZ FORMATU: kolumny opisuja strony ZGODNIE Z POZYCJA (A = inicjujacy, B = odbierajacy;
+       IMEI/IMSI/BTS danej strony sa w jej kolumnach), FORW: abonent z kolumny C przenoszony do strony B,
        czyszczenie cudzyslowow i komunikatow "Numer B przypisany do sieci: Plus",
        dane abonenckie (PESEL, NIP, Ważne od/do) jako nazwiska+historia, transmisja jako DATA,
        zestawy grupowane po ID zapytania, pliki puste i tylko-internet obslugiwane

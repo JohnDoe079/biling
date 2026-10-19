@@ -74,6 +74,17 @@ def normalizuj_numer(num) -> str:
         return ""
     return re.sub(r"\D", "", str(num))
 
+def normalizuj_strone(v) -> str:
+    """
+    Normalizuje identyfikator strony (numer telefonu): 48123456789 -> 123456789.
+    Niecyfrowe identyfikatory przechodza bez zmian. Stosowac na kolumnach
+    strona_a/strona_b przy parsowaniu, zeby 48-prefix nie rozdwajal kontaktow.
+    """
+    n = normalizuj_numer(v)
+    if n and n.isdigit() and len(n) >= 9:
+        return klucz_numer(n)
+    return "" if v is None else str(v).strip()
+
 def klucz_numer(num) -> str:
     """
     Kanoniczna postac numeru do porownan (klucz w mapach, laczenie billingow).

@@ -236,76 +236,129 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
 def komunikacja_bezposrednia(rekordy):
     """
     Laczy abonentow ze soba: zdarzenie, w ktorym strona A nalezy do abonenta X
-    a strona B do abonenta Y (lub odwrotnie). Zwraca DataFrame par.
+    a strona B do abonenta Y (lub odwrotnie).
+    Zwraca wiersze per (abonent, drugi abonent) ze statystykami kierunkow,
+    tak jak wspolne_kontakty().
     """
-    numery = {r["numer"]: r for r in rekordy if r["numer"]}
     wiersze = []
-    for rx, ry in itertools.permutations(rekordy, 2):
-        nx, ny = rx["numer"], ry["numer"]
-        if not nx or not ny or nx == ny:
+    for rx in rekordy:
+        nx = rx["numer"]
+        if not nx:
             continue
         dfx = rx["df"]
-        # zdarzenia gdzie abonent X to strona A a numer abonenta Y to strona B
-        mask_ab = (dfx["a_key"] == nx) & (dfx["b_key"] == ny)
-        mask_ba = (dfx["a_key"] == ny) & (dfx["b_key"] == nx)
-        sub = dfx[mask_ab | mask_ba]
-        if sub.empty:
+        if dfx.empty:
             continue
-        voice = sub[sub["typ"] == "VOICE"]
-        proba = sub[sub["typ"] == "PRÓBA"]
-        sms = sub[sub["typ"].isin(["SMS", "MMS"])]
-        ix, iy = rx.get("identyfikator", ""), ry.get("identyfikator", "")
-        wiersze.append({
-            "od": rx["abonent"], "numer_od": nx, "operator_od": rx["operator"],
-            "id_od": ix,
-            "do": ry["abonent"], "numer_do": ny, "operator_do": ry["operator"],
-            "id_do": iy,
-            "ta_sama_osoba": "TAK" if (ix and iy and ix == iy) else "",
-            "voice": len(voice), "proby": len(proba), "sms_mms": len(sms),
-            "razem": len(sub),
-            "zakres_od": sub["data"].min(), "zakres_do": sub["data"].max(),
-        })
+        for ry in rekordy:
+            ny = ry["numer"]
+            if not ny or klucz_numer(nx) == klucz_numer(ny):
+                continue
+            mask_ab = (dfx["a_key"] == nx) & (dfx["b_key"] == ny)
+            mask_ba = (dfx["a_key"] == ny) & (dfx["b_key"] == nx)
+            sub = dfx[mask_ab | mask_ba]
+            if sub.empty:
+                continue
+            voice = sub[sub["typ"] == "VOICE"]
+            proba = sub[sub["typ"] == "PRÓBA"]
+            sms = sub[sub["typ"].isin(["SMS", "MMS"])]
+            dane = sub[sub["typ"] == "DATA"]
+            ix, iy = rx.get("identyfikator", ""), ry.get("identyfikator", "")
+            wiersze.append({
+                "numer_kontaktu": ny,        # drugi abonent
+                "nazwa_kontaktu": "",         # numery nie maja nazw w tym kontekscie
+                "abonent": nx,
+                "razem": len(sub),
+                "voice_przych": int((voice["b_key"] == nx).sum()),
+                "voice_wych": int((voice["a_key"] == nx).sum()),
+                "proby_przych": int((proba["b_key"] == nx).sum()),
+                "proby_wych": int((proba["a_key"] == nx).sum()),
+                "sms_przych": int((sms["b_key"] == nx).sum()),
+                "sms_wych": int((sms["a_key"] == nx).sum()),
+                "dane": int(len(dane)),
+                "okres_od": sub["data"].min(),
+                "okres_do": sub["data"].max(),
+                "ta_sama_osoba": "TAK" if (ix and iy and ix == iy) else "",
+            })
     if not wiersze:
         return pd.DataFrame()
-    out = pd.DataFrame(wiersze)
-    return out.sort_values("razem", ascending=False).reset_index(drop=True)
-
+    kol = ["numer_kontaktu", "nazwa_kontaktu", "abonent", "razem",
+           "voice_przych", "voice_wych", "proby_przych", "proby_wych",
+           "sms_przych", "sms_wych", "dane", "okres_od", "okres_do", "ta_sama_osoba"]
+    return pd.DataFrame(wiersze)[kol]
 
 def wspolne_kontakty(rekordy):
     """
     Osoby trzecie (numery spoza zbioru abonentow) kontaktujace sie
-    z co najmniej dwoma analizowanymi abonentami.
-    Zwraca DataFrame: numer_osoby, abonenci, operatorzy, liczby zdarzen per abonent.
+    z co najmniej dwoma analizowanymi abonentami — Z ROZBITIEM per abonent:
+    okres, liczby przych/wych/proby/SMS/MMS/DATA.
+    Jesli nazwa kontaktu jest znana (z danych abonenckich badanych numerow), dolaczana.
     """
     zbior_numerow = {r["numer"] for r in rekordy if r["numer"]}
-    kontakty = {}  # klucz_numer -> {abonent_key: liczba}
-    dane_osob = {}
+    mapa_nazw = {}
     for r in rekordy:
+        mapa_nazw.update(r["nazwiska_map"])
+
+    # kontakt -> {abonent_label: {stats}}
+    per_kontakt = {}
+
+    def statystyki(sub, numer):
+        voice = sub[sub["typ"] == "VOICE"]
+        proba = sub[sub["typ"] == "PRÓBA"]
+        sms = sub[sub["typ"].isin(["SMS", "MMS"])]
+        dane = sub[sub["typ"] == "DATA"]
+        return {
+            "razem": len(sub),
+            "voice_wych": int((voice["a_key"] == numer).sum()),
+            "voice_przych": int((voice["b_key"] == numer).sum()),
+            "proby_wych": int((proba["a_key"] == numer).sum()),
+            "proby_przych": int((proba["b_key"] == numer).sum()),
+            "sms_wych": int((sms["a_key"] == numer).sum()),
+            "sms_przych": int((sms["b_key"] == numer).sum()),
+            "dane": int(len(dane)),
+            "okres_od": sub["data"].min(),
+            "okres_do": sub["data"].max(),
+        }
+
+    for r in rekordy:
+        numer = r["numer"]
+        if not numer:
+            continue
+        label_ab = numer  # w raporcie krzyzowym: TYLKO numer telefonu
         df = r["df"]
-        ident = r.get("identyfikator", "")
-        klucz_ab = f'{r["abonent"]} [{r["numer"]}]' + (f' {{{ident}}}' if ident else '')
-        sub = df[(df["a_key"] == r["numer"]) | (df["b_key"] == r["numer"])]
-        druga = sub.apply(lambda w: w["b_key"] if w["a_key"] == r["numer"] else w["a_key"], axis=1)
-        for num in druga:
-            if not num or num in zbior_numerow:
+        if df.empty:
+            continue
+        mask_ab = (df["a_key"] == numer) | (df["b_key"] == numer)
+        sub = df[mask_ab]
+        if sub.empty:
+            continue
+        druga = sub.apply(
+            lambda w: w["b_key"] if w["a_key"] == numer else w["a_key"], axis=1)
+        for num_kontaktu in druga.unique():
+            if not num_kontaktu or num_kontaktu in zbior_numerow:
                 continue
-            kontakty.setdefault(num, {})
-            kontakty[num][klucz_ab] = kontakty[num].get(klucz_ab, 0) + 1
+            ev = sub[druga == num_kontaktu]
+            per_kontakt.setdefault(num_kontaktu, {})[label_ab] = statystyki(ev, numer)
 
     wiersze = []
-    for num, per_ab in kontakty.items():
+    for num, per_ab in per_kontakt.items():
         if len(per_ab) < 2:
             continue
-        wiersze.append({
-            "numer_kontaktu": num,
-            "abonenci": " | ".join(sorted(per_ab.keys())),
-            "liczba_abonentow": len(per_ab),
-            "razem_zdarzen": sum(per_ab.values()),
-        })
+        dane_kont = mapa_nazw.get(num, {})
+        nazwa = dane_kont.get("nazwa", "")
+        for label_ab, st in per_ab.items():
+            wiersze.append({
+                "numer_kontaktu": num,
+                "nazwa_kontaktu": nazwa,
+                "abonent": label_ab,
+                **st,
+            })
     if not wiersze:
         return pd.DataFrame()
-    return pd.DataFrame(wiersze).sort_values(
-        ["liczba_abonentow", "razem_zdarzen"], ascending=False).reset_index(drop=True)
+    kol = ["numer_kontaktu", "nazwa_kontaktu", "abonent", "razem",
+           "voice_przych", "voice_wych", "proby_przych", "proby_wych",
+           "sms_przych", "sms_wych", "dane", "okres_od", "okres_do"]
+    out = pd.DataFrame(wiersze)[kol]
+    out = out.sort_values(["numer_kontaktu", "abonent"]).reset_index(drop=True)
+    return out
 
 
 def wspolne_imei(rekordy):
@@ -342,18 +395,32 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
     L.append("=" * 120)
     L.append("")
 
+    # liczniki zdarzen KRZYZOWYCH per abonent (nie suma calego billingu)
+    dir_cnt, sha_cnt = {}, {}
+    if not bezposrednia.empty:
+        for _, rr in bezposrednia.iterrows():
+            dir_cnt[rr["abonent"]] = dir_cnt.get(rr["abonent"], 0) + int(rr["razem"])
+    if not wspolne.empty:
+        for _, rr in wspolne.iterrows():
+            sha_cnt[rr["abonent"]] = sha_cnt.get(rr["abonent"], 0) + int(rr["razem"])
+
     # SEKCJA A — abonenci
-    L.append("-" * 110)
-    L.append("  SEKCJA A: ANALIZOWANI ABONENCI")
-    L.append("-" * 110)
-    L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8}".format(
+    L.append("-" * 130)
+    L.append("  SEKCJA A: ANALIZOWANI ABONENCI — liczniki zdarzen KRZYZOWYCH")
+    L.append("-" * 130)
+    L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8} {:>10}".format(
         "Lp", "Folder abonenta", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator",
-        "Okres od", "Okres do", "Zdarzenia"))
+        "Okres od", "Okres do", "Z innymi", "Z kontakt."))
     L.append("-" * 130)
     for i, r in enumerate(rekordy, 1):
-        L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8}".format(
-            i, r["abonent"][:28], r["numer"] or "-", r.get("identyfikator", "")[:18],
-            r["operator"], r["okres_od"], r["okres_do"], len(r["df"])))
+        num = r["numer"]
+        L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8} {:>10}".format(
+            i, r["abonent"][:28], num or "-", r.get("identyfikator", "")[:18],
+            r["operator"], r["okres_od"], r["okres_do"],
+            dir_cnt.get(num, 0), sha_cnt.get(num, 0)))
+    L.append("")
+    L.append("  'Z innymi'   = zdarzenia z innymi ANALIZOWANYMI abonentami (sekcja B)")
+    L.append("  'Z kontakt.' = zdarzenia ze wspolnymi kontaktami osob trzecich (sekcja C)")
     L.append("")
 
     # SEKCJA B — bezposrednia
@@ -361,30 +428,68 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
     L.append("  SEKCJA B: KOMUNIKACJA BEZPOSREDNIA MIEDZY ANALIZOWANYMI ABONENTAMI")
     L.append("-" * 110)
     if not bezposrednia.empty:
-        L.append("  {:>3} {:<24} {:<24} {:<4} {:>6} {:>6} {:>8} {:>7} {:<23}".format(
-            "Lp", "Abonent (od)", "Abonent (do)", "Oso.", "Voice", "Proby", "SMS/MMS", "Razem", "Zakres czasu"))
-        L.append("-" * 130)
-        for i, (_, r) in enumerate(bezposrednia.iterrows(), 1):
-            L.append("  {:>3} {:<24} {:<24} {:<4} {:>6} {:>6} {:>8} {:>7} {:<23}".format(
-                i, r["od"][:24], r["do"][:24], r.get("ta_sama_osoba", ""), r["voice"],
-                r["proby"], r["sms_mms"], r["razem"],
-                f'{r["zakres_od"]} - {r["zakres_do"]}'))
+        akt_num = None
+        lp = 0
+        for _, r in bezposrednia.iterrows():
+            klucz_pary = tuple(sorted([str(r["abonent"]), str(r["numer_kontaktu"])]))
+            if klucz_pary != akt_num:
+                akt_num = klucz_pary
+                lp += 1
+                n_ab = 0
+                oso = ""
+                for _, rr in bezposrednia.iterrows():
+                    if tuple(sorted([str(rr["abonent"]), str(rr["numer_kontaktu"])])) == klucz_pary:
+                        n_ab += 1
+                        if rr.get("ta_sama_osoba"):
+                            oso = "  [TA SAMA OSOBA/FIRMA]"
+                L.append("")
+                L.append(f"  #{lp} POLACZENIE BEZPOSREDNIE: {klucz_pary[0]} <-> {klucz_pary[1]}{oso}")
+                L.append("  " + "-" * 126)
+                L.append("  {:<14} {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
+                    "Numer", "Drugi numer", "Okres", "Razem", "Vprz", "Vwych", "Pprz", "Pwych",
+                    "Sprz", "Swych", "DATA", ""))
+            L.append("  {:<14} {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
+                str(r["abonent"])[:14], str(r["numer_kontaktu"])[:14],
+                f'{r["okres_od"]} - {r["okres_do"]}'[:23],
+                r["razem"], r["voice_przych"], r["voice_wych"],
+                r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
+                r["dane"], ""))
+        L.append("")
+        L.append("  Legenda: Vprz/Vwych - polaczenia przychodzace/wychodzace, "
+                 "Pprz/Pwych - proby, Sprz/Swych - SMS/MMS, DATA - transmisje danych.")
     else:
         L.append("  Brak bezposredniej komunikacji miedzy analizowanymi abonentami.")
     L.append("")
 
-    # SEKCJA C — wspolne kontakty
-    L.append("-" * 110)
-    L.append("  SEKCJA C: OSOBY TRZECIE LACZACE ABONENTOW (wspolne kontakty)")
-    L.append("-" * 110)
+    # SEKCJA C — wspolne kontakty (z rozbiciem per abonent)
+    L.append("-" * 130)
+    L.append("  SEKCJA C: OSOBY TRZECIE LACZACE ABONENTOW (wspolne kontakty) — szczegoly")
+    L.append("-" * 130)
     if not wspolne.empty:
-        L.append("  {:>3} {:<14} {:>3} {:>8}  {:<70}".format(
-            "Lp", "Numer", "Ab.", "Zdarzen", "Abonenci laczeni tym numerem"))
-        L.append("-" * 110)
-        for i, (_, r) in enumerate(wspolne.iterrows(), 1):
-            L.append("  {:>3} {:<14} {:>3} {:>8}  {:<70}".format(
-                i, r["numer_kontaktu"], r["liczba_abonentow"], r["razem_zdarzen"],
-                r["abonenci"][:70]))
+        akt_num = None
+        lp = 0
+        for _, r in wspolne.iterrows():
+            if r["numer_kontaktu"] != akt_num:
+                akt_num = r["numer_kontaktu"]
+                lp += 1
+                nazwa = f"  ({r['nazwa_kontaktu']})" if r["nazwa_kontaktu"] else ""
+                n_ab = int((wspolne["numer_kontaktu"] == akt_num).sum())
+                L.append("")
+                L.append(f"  #{lp} WSPOLNY KONTAKT: {akt_num}{nazwa} — laczy {n_ab} abonentow")
+                L.append("  " + "-" * 126)
+                L.append("  {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
+                    "Numer abonenta", "Okres", "Zd.z kont.", "Vprz", "Vwych", "Pprz", "Pwych",
+                    "Sprz", "Swych", "DATA", ""))
+            L.append("  {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
+                str(r["abonent"])[:14],
+                f'{r["okres_od"]} - {r["okres_do"]}'[:23],
+                r["razem"], r["voice_przych"], r["voice_wych"],
+                r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
+                r["dane"], ""))
+        L.append("")
+        L.append("  Legenda: Zd.z kont. = WSZYSTKIE zdarzenia abonenta z TYM kontaktem (nie caly billing);")
+        L.append("  Vprz/Vwych - polaczenia przychodzace/wychodzace, Pprz/Pwych - proby,")
+        L.append("  Sprz/Swych - SMS/MMS, DATA - transmisje danych.")
     else:
         L.append("  Brak wspolnych kontaktow osob trzecich.")
     L.append("")
@@ -414,28 +519,38 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         w = csv.writer(f, delimiter=";")
         w.writerow(["ANALIZA KRZYZOWA BILINGOW"])
         w.writerow([])
-        w.writerow(["ABONENCI"])
-        w.writerow(["Folder", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator", "Okres od", "Okres do", "Liczba zdarzen"])
+        w.writerow(["ABONENCI — liczniki zdarzen KRZYZOWYCH"])
+        w.writerow(["Folder", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator", "Okres od", "Okres do",
+                    "Zdarzen z innymi abonentami", "Zdarzen ze wspolnymi kontaktami"])
         for r in rekordy:
-            w.writerow([r["abonent"], r["numer"], r.get("identyfikator", ""), r["operator"],
-                        r["okres_od"], r["okres_do"], len(r["df"])])
+            num = r["numer"]
+            w.writerow([r["abonent"], num, r.get("identyfikator", ""), r["operator"],
+                        r["okres_od"], r["okres_do"],
+                        dir_cnt.get(num, 0), sha_cnt.get(num, 0)])
         w.writerow([])
-        w.writerow(["KOMUNIKACJA BEZPOSREDNIA"])
-        w.writerow(["Abonent (od)", "Numer od", "Operator od", "PESEL/NIP od", "Abonent (do)", "Numer do",
-                    "Operator do", "PESEL/NIP do", "Ta sama osoba/firma",
-                    "Voice", "Proby", "SMS/MMS", "Razem", "Zakres od", "Zakres do"])
+        w.writerow(["KOMUNIKACJA BEZPOSREDNIA — szczegoly per abonent"])
+        w.writerow(["Numer abonenta", "Numer drugiego abonenta",
+                    "Razem zdarzen", "Voice przych", "Voice wych",
+                    "Proby przych", "Proby wych", "SMS przych", "SMS wych", "DATA",
+                    "Okres od", "Okres do", "Ta sama osoba/firma"])
         if not bezposrednia.empty:
             for _, r in bezposrednia.iterrows():
-                w.writerow([r["od"], r["numer_od"], r["operator_od"], r.get("id_od", ""),
-                            r["do"], r["numer_do"], r["operator_do"], r.get("id_do", ""),
-                            r.get("ta_sama_osoba", ""),
-                            r["voice"], r["proby"], r["sms_mms"], r["razem"], r["zakres_od"], r["zakres_do"]])
+                w.writerow([r["abonent"], r["numer_kontaktu"],
+                            r["razem"], r["voice_przych"], r["voice_wych"],
+                            r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
+                            r["dane"], r["okres_od"], r["okres_do"], r.get("ta_sama_osoba", "")])
         w.writerow([])
-        w.writerow(["WSPOLNE KONTAKTY OSOB TRZECICH"])
-        w.writerow(["Numer kontaktu", "Liczba abonentow", "Razem zdarzen", "Abonenci"])
+        w.writerow(["WSPOLNE KONTAKTY OSOB TRZECICH — szczegoly per abonent"])
+        w.writerow(["Numer kontaktu", "Nazwa kontaktu", "Numer abonenta",
+                    "Zdarzen z kontaktem", "Voice przych", "Voice wych",
+                    "Proby przych", "Proby wych", "SMS przych", "SMS wych", "DATA",
+                    "Okres od", "Okres do"])
         if not wspolne.empty:
             for _, r in wspolne.iterrows():
-                w.writerow([r["numer_kontaktu"], r["liczba_abonentow"], r["razem_zdarzen"], r["abonenci"]])
+                w.writerow([r["numer_kontaktu"], r["nazwa_kontaktu"], r["abonent"],
+                            r["razem"], r["voice_przych"], r["voice_wych"],
+                            r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
+                            r["dane"], r["okres_od"], r["okres_do"]])
         w.writerow([])
         w.writerow(["WSPOLNE IMEI"])
         w.writerow(["IMEI", "Liczba abonentow", "Abonenci"])
@@ -483,6 +598,9 @@ def raport_per_numer(r, outdir):
                                       historia_ab, hk, bloki=None, imsi_df=imsi_df))
     ab.generuj_raport_csv(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_csv,
                           historia_ab, hk, bloki=None, imsi_df=imsi_df)
+    p_docx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
+    ab.generuj_raport_docx(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_docx,
+                           historia_ab, hk, bloki=None, imsi_df=imsi_df)
     print(f"    raport: {p_txt}")
 
 
@@ -490,8 +608,12 @@ def raport_per_numer(r, outdir):
 # MAIN
 # ══════════════════════════════════════════════════════════════════════
 
-def przebieg(root: str, outdir: str, bez_per_numer: bool = False):
-    """Pelny przebieg analizy krzyzowej (wywolywany z CLI i z analizaBilling)."""
+def przebieg(root: str, outdir: str = None, bez_per_numer: bool = False):
+    """Pelny przebieg analizy krzyzowej (wywolywany z CLI i z analizaBilling).
+    outdir=None -> output/RRRR-MM-DD_GGMM (folder wynikowy nazwany data + godzina)."""
+    if not outdir:
+        from datetime import datetime
+        outdir = os.path.join("./output", datetime.now().strftime("%Y-%m-%d_%H%M"))
     if not os.path.isdir(root):
         print(f"[!] Nie ma takiego katalogu: {root}")
         sys.exit(1)
@@ -502,6 +624,8 @@ def przebieg(root: str, outdir: str, bez_per_numer: bool = False):
         sys.exit(1)
 
     os.makedirs(outdir, exist_ok=True)
+    krzyz_dir = os.path.join(outdir, "krzyzowy")
+    os.makedirs(krzyz_dir, exist_ok=True)
 
     if not bez_per_numer:
         print("\n[+] Raporty per numer:")
@@ -515,8 +639,8 @@ def przebieg(root: str, outdir: str, bez_per_numer: bool = False):
     wspolne = wspolne_kontakty(rekordy)
     imei_df = wspolne_imei(rekordy)
 
-    out_txt = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.txt")
-    out_csv = os.path.join(outdir, "RAPORT_ZBIORCZY_KRZYZOWY.csv")
+    out_txt = os.path.join(krzyz_dir, "RAPORT_ZBIORCZY_KRZYZOWY.txt")
+    out_csv = os.path.join(krzyz_dir, "RAPORT_ZBIORCZY_KRZYZOWY.csv")
     generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, out_csv)
 
     print("\n" + "=" * 100)
@@ -524,10 +648,12 @@ def przebieg(root: str, outdir: str, bez_per_numer: bool = False):
     print("=" * 100)
     print(f"  Abonentow: {len(rekordy)}")
     print(f"  Bezposrednich polaczen miedzy abonentami: {len(bezposrednia)} kierunkow")
-    print(f"  Wspolnych kontaktow osob trzecich: {len(wspolne)} numerow")
+    n_wspolnych = wspolne["numer_kontaktu"].nunique() if not wspolne.empty else 0
+    print(f"  Wspolnych kontaktow osob trzecich: {n_wspolnych} numerow ({len(wspolne)} powiazan)")
     print(f"  Wspolnych urzadzen (IMEI): {len(imei_df)}")
     print("=" * 100)
-    print(f"\n[+] RAPORT ZBIORCZY TXT: {os.path.abspath(out_txt)}")
+    print(f"\n[+] RAPORTY PER NUMER:   {os.path.abspath(outdir)}")
+    print(f"[+] RAPORT ZBIORCZY TXT: {os.path.abspath(out_txt)}")
     print(f"[+] RAPORT ZBIORCZY CSV: {os.path.abspath(out_csv)}")
 
 
