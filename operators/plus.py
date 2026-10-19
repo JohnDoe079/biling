@@ -77,16 +77,28 @@ def _czysto(v):
         return ""
     if re.fullmatch(r"\d+\.0", s):
         s = s[:-2]
+    if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
+        s = s[1:-1]
     return s
 
 
 _MAPA_TYPOW = {
     "MOC": "VOICE", "PTC": "VOICE", "POC": "VOICE", "MTC": "VOICE",
+    "PBXO": "VOICE",
     "SMO": "SMS", "SMT": "SMS",
     "MMR": "MMS",
-    "UCAT": "PRÓBA", "UCAM": "PRÓBA",
+    "UCAT": "PRÓBA", "UCAM": "PRÓBA", "UCA": "PRÓBA",
     "FORW": "FWD",
 }
+
+# Smieciowe wartosci BTS w exportach Plusa (np. 'Numer B przypisany do sieci: Plus')
+_RE_BTS_SMIECI = re.compile(r"^numer\s+[abc]\s+przypisany", re.IGNORECASE)
+
+def _czysto_bts(v):
+    s = _czysto(v)
+    if _RE_BTS_SMIECI.match(s):
+        return ""
+    return s
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -126,17 +138,24 @@ def parse_plus(path: str, verbose: bool = False):
         # --- wykaz polaczen ---
         typ = kol("usługa/typ", "usługa", "typ").map(_czysto).str.upper()
         typ = typ.map(lambda t: _MAPA_TYPOW.get(t, t or "VOICE"))
+        strona_b = kol("b msisdn").map(_czysto)
+        c_msisdn = kol("c msisdn").map(_czysto)
+        # FORW: abonent (numer zadania) wystepuje w kolumnie C jako strona przekazujaca;
+        # kolumna B to zwykle poczta glosowa — abonenta przenosimy do strony B,
+        # zeby zdarzenie bralo udzial w analizie kontaktow.
+        mask_forw = (typ == "FWD") & c_msisdn.ne("")
+        strona_b = strona_b.where(~mask_forw, c_msisdn)
         out = pd.DataFrame({
             "data": poczatek.dt.strftime("%Y-%m-%d"),
             "czas": poczatek.dt.strftime("%H:%M:%S"),
             "czas_trwania": czas_trwania,
             "typ": typ,
             "strona_a": kol("a msisdn").map(_czysto),
-            "bts_a": kol("a bts address").map(_czysto),
+            "bts_a": kol("a bts address").map(_czysto_bts),
             "imei_a": kol("a imei/a esn", "a imei").map(_czysto),
             "imsi_a": kol("a imsi").map(_czysto),
-            "strona_b": kol("b msisdn").map(_czysto),
-            "bts_b": kol("b bts address").map(_czysto),
+            "strona_b": strona_b,
+            "bts_b": kol("b bts address").map(_czysto_bts),
             "imei_b": kol("b imei/b esn", "b imei").map(_czysto),
             "imsi_b": kol("b imsi").map(_czysto),
         })
@@ -148,7 +167,7 @@ def parse_plus(path: str, verbose: bool = False):
             "czas_trwania": czas_trwania,
             "typ": "DATA",
             "strona_a": kol("msisdn").map(_czysto),
-            "bts_a": kol("bts address").map(_czysto),
+            "bts_a": kol("bts address").map(_czysto_bts),
             "imei_a": kol("imei").map(_czysto),
             "imsi_a": kol("imsi").map(_czysto),
             "strona_b": "",
@@ -160,6 +179,16 @@ def parse_plus(path: str, verbose: bool = False):
     out = out[out["strona_a"].astype(str).str.strip() != ""]
     out = out[out["data"].notna() & (out["data"] != "NaT")]
     out = out.reset_index(drop=True)
+
+    # W exportach Plusa KOLUMNY "A ..." ZAWIERAJA ZAWSZE DANE STRONY ANALIZOWANEJ
+    # (abonenta z zapytania) — niezaleznie od tego, czy stoi on w A czy B MSISDN.
+    # Jesli abonent jest w B: przenosimy jego IMEI/IMSI/BTS z kolumn A do B.
+    if msisdn and not out.empty:
+        kl = klucz_numer(msisdn)
+        b_ab = out["strona_b"].map(klucz_numer) == kl
+        cols3 = ["imei_b", "imsi_b", "bts_b"]
+        out.loc[b_ab, cols3] = out.loc[b_ab, ["imei_a", "imsi_a", "bts_a"]].values
+        out.loc[b_ab, ["imei_a", "imsi_a", "bts_a"]] = ""
 
     if verbose:
         print(f"[plus] {os.path.basename(path)}: {len(out)} rekordow, msisdn={msisdn}")
@@ -186,16 +215,13 @@ def parse_plus_nazwiska(path: str, verbose: bool = False):
                 return df[cols[n]]
         return pd.Series([""] * len(df))
 
-    msisdn_s   = kol("msisdn").map(_czysto)
-    pesel_s    = kol("pesel").map(_czysto)
-    nip_s      = kol("nip").map(_czysto)
-    sim_s      = kol("sim").map(_czysto)
-    typms_s    = kol("typ msisdn").map(_czysto)
-    status_s   = kol("status").map(_czysto)
-    nazwa_s    = kol("imię i nazwisko/nazwa", "imię i nazwisko", "nazwa").map(_czysto)
-    adres_s    = kol("adres").map(_czysto)
-    wazne_od   = kol("ważne od", "wazne od").map(_czysto)
-    wazne_do   = kol("ważne do", "wazne do").map(_czysto)
+    msisdn_s  = kol("msisdn").map(_czysto)
+    pesel_s   = kol("pesel").map(_czysto)
+    nip_s     = kol("nip").map(_czysto)
+    nazwa_s   = kol("imię i nazwisko/nazwa", "imię i nazwisko", "nazwa").map(_czysto)
+    adres_s   = kol("adres").map(_czysto)
+    wazne_od  = kol("ważne od", "wazne od").map(_czysto)
+    wazne_do  = kol("ważne do", "wazne do").map(_czysto)
 
     for i in range(len(df)):
         num = klucz_numer(msisdn_s.iloc[i])
@@ -209,9 +235,6 @@ def parse_plus_nazwiska(path: str, verbose: bool = False):
             "adres": adres_s.iloc[i],
             "pesel": pesel_s.iloc[i],
             "nip": nip_s.iloc[i],
-            "sim": sim_s.iloc[i],
-            "typ_msisdn": typms_s.iloc[i],
-            "status": status_s.iloc[i],
             "data_akt": (wazne_od.iloc[i] or "")[:10],
             "data_dezakt": (wazne_do.iloc[i] or "")[:10],
         }
@@ -235,13 +258,7 @@ def parse_plus_nazwiska(path: str, verbose: bool = False):
 #   ...-wyniki-8275782-transmisja_danych-...xls
 # Token (np. 8275782) to ID zapytania — laczy pliki jednego numeru.
 
-# Prefix NQR (np. 1QR..6QR) = "N query" — oznaczenie odpowiedzi operatora na
-# JEDNO zapytanie; pliki z tym samym prefixem tworza scisle powiazany zestaw
-# (czesto: wykaz + dane abonenckie + transmisja jednej odpowiedzi).
-# Grupujemy po (prefix QR, token), a analize i tak prowadzimy po zawartosci
-# (klucz = MSISDN z danych).
 _RE_PLIK = re.compile(
-    r"^(?:(?P<qr>\d+)QR[-_])?.*?"
     r"wyniki-(?P<token>\d+)-(?:(?:dane_)?)(?P<rola>wykaz_polaczen|dane_abonenckie|transmisja_danych)",
     re.IGNORECASE)
 
@@ -258,23 +275,18 @@ def datasets(folder: str):
                    glob.glob(os.path.join(folder, "*.pdf")))
     grupy, inne = {}, []
     for f in pliki:
-        m = _RE_PLIK.match(os.path.basename(f))
+        m = _RE_PLIK.search(os.path.basename(f))
         if m:
-            klucz = (m.group("qr") or "", m.group("token"))
-            g = grupy.setdefault(klucz, {})
-            if m.group("rola") not in g:   # duplikat roli: pierwszy plik wygrywa
-                g[m.group("rola")] = f
+            grupy.setdefault(m.group("token"), {})[m.group("rola")] = f
         else:
             inne.append(f)
     out = []
-    for (qr, token) in sorted(grupy):
-        g = grupy[(qr, token)]
-        if "wykaz_polaczen" not in g and "transmisja_danych" not in g \
-                and "dane_abonenckie" not in g:
+    for token in sorted(grupy):
+        g = grupy[token]
+        if "wykaz_polaczen" not in g and "transmisja_danych" not in g:
             continue
         out.append({
             "token": token,
-            "qr": qr,
             "wykaz": g.get("wykaz_polaczen"),
             "nazwiska": g.get("dane_abonenckie"),
             "transmisja": g.get("transmisja_danych"),

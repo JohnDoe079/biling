@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """Wspolne narzedzia dla analizy bilingow (multi-operator)."""
 import glob
-import hashlib
 import os
 import re
 import readline
@@ -74,35 +73,6 @@ def normalizuj_numer(num) -> str:
     if num is None:
         return ""
     return re.sub(r"\D", "", str(num))
-
-def sha256_pliku(path: str) -> str:
-    """Suma kontrolna SHA-256 pliku (do listingu w raportach ogledzin)."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-def format_numer(num) -> str:
-    """
-    Prezentacja numeru Z prefiksem krajowym — 48 TYLKO dla polskich numerow.
-    - 9 cyfr -> zakladamy numer polski (komorkowy lub stacjonarny; kody
-      stacjonarne zaczynaja sie od 1-8) i doklejamy 48,
-      wyjatki: wiodace 0 (prefiks krajowy) oraz numer juz zaczynajacy sie
-      od 48 (kod kierunkowy Radomia w formacie krajowym) -> bez zmian,
-    - 0048xxx -> 48xxx,
-    - numery zagraniczne z numerem kierunkowym i krotkie kody (112, 998)
-      -> bez zmian.
-    Uzywac WYLACZNIE do wyswietlania; do porownan klucz_numer().
-    """
-    n = normalizuj_numer(num)
-    if not n:
-        return ""
-    if n.startswith("0048") and len(n) == 13:
-        return "48" + n[4:]
-    if len(n) == 9 and n[0] != "0" and not n.startswith("48"):
-        return "48" + n
-    return n
 
 def klucz_numer(num) -> str:
     """

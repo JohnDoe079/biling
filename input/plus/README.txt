@@ -1,7 +1,7 @@
-W tym folderze umieszczamy pliki Excel (.xls/.xlsx) od Plus (Polkomtel):
-  wyniki-<token>-wykaz_polaczen-<data>.xls
-  wyniki-<token>-dane_abonenckie-<data>.xls
-  wyniki-<token>-transmisja_danych-<data>.xls
+FOLDER OPERATORA: PLUS
+============================================================
 
-Uwaga: pliki pochodzace z jednego zapytania maja wspolny <token>
-i sa automatycznie scalane w jeden zestaw.
+WRZUCAJ TUTAJ podfoldery abonentow Plus (Polkomtel), np.:
+  input/plus/Nowak_Piotr/billing.xls  (Excel .xls/.xlsx, naglowek w wierszu 5)
+
+Kazdy abonent = osobny podfolder o dowolnej nazwie.

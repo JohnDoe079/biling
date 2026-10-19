@@ -1,2 +1,7 @@
-W tym folderze umieszczamy pliki od Play (P4).
-Format plikow: TODO (czekamy na przykladowy biling).
+FOLDER OPERATORA: PLAY
+============================================================
+
+WRZUCAJ TUTAJ podfoldery abonentow Play.
+Parser w przygotowaniu — dostarcz przykladowy plik, aby dopasowac wzorce.
+
+Kazdy abonent = osobny podfolder o dowolnej nazwie.
