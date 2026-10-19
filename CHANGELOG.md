@@ -1,6 +1,29 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
 
+## 2026-10-19 20:15
+### Usuniete
+- Stary tryb reczny (wybor operatora 1-4, wpisywanie sciezek, zapytaj_o_plik) —
+  zostala WYŁACZNIE autodetekcja: ./input (krzyzowa lub wybor folderu z listy)
+  oraz --folder <sciezka> (operator zgadywany po plikach)
+
+## 2026-10-19 15:10
+### Zmienione
+- Po odpowiedzi "n" w auto-skanie: lista wykrytych folderow do wyboru numerem
+  (zamiast wpisywania sciezek); "r" = stary tryb reczny
+- Pusty Enter przy sciezce = zakonczenie programu (bez traceback)
+
+## 2026-10-19 14:05
+### Zmienione
+- TRYB RECZNY (analizaBilling.py): folder operatora obslugiwany przez modul tego operatora
+  (pliki_z_folderu) — koniec sztywnego wzorca *_wykaz.pdf; dziala dla Orange (PDF) i Plus (XLS)
+- Wiele zestawow w folderze recznym scala sie w jeden raport; numer brany z zestawu z danymi
+- --folder bez --operator: operator zgadywany po rozszerzeniach plikow
+
+## 2026-10-19 13:45
+### Zmienione
+- Usunieto FutureWarning przy scalaniu / budowaniu globalnej tabeli (puste ramki pomijane)
+
 ## 2026-10-19 13:24
 ### Dodane
 - SEKCJA 6: KARTY SIM (IMSI) w raportach TXT+CSV (imsi_dla_numeru), z ostrzezeniem o wymianie SIM

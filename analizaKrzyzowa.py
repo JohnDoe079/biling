@@ -199,7 +199,11 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
             kolejnosc.append(k)
         else:
             r2 = scalone[k]
-            r2["df"] = pd.concat([r2["df"], r["df"]], ignore_index=True)
+            if not r["df"].empty:
+                if r2["df"].empty:
+                    r2["df"] = r["df"]
+                else:
+                    r2["df"] = pd.concat([r2["df"], r["df"]], ignore_index=True)
             r2["nazwiska_map"].update(r["nazwiska_map"])
             for n, w in r["historia"].items():
                 r2["historia"].setdefault(n, [])
@@ -220,7 +224,8 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
         if not r["df"].empty:
             r["okres_od"], r["okres_do"] = okres_bilingow(r["df"])
 
-    global_df = pd.concat([r["df"] for r in rekordy], ignore_index=True) if rekordy else pd.DataFrame()
+    _ramki = [r["df"] for r in rekordy if not r["df"].empty]
+    global_df = pd.concat(_ramki, ignore_index=True) if _ramki else pd.DataFrame()
     return rekordy, global_df
 
 

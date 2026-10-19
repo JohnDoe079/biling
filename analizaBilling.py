@@ -6,6 +6,7 @@ Wymagania systemowe (Debian/Ubuntu):
     sudo apt install poppler-utils python3-pandas
 """
 import argparse
+import glob
 import csv
 import os
 import sys
@@ -19,6 +20,7 @@ from common import (
 )
 from operators.orange import (parse_orange, parse_orange_nazwiska, parse_orange_bts,
                               autodetect as orange_autodetect)
+from operators import orange as _orange_mod
 from operators import tmobile, plus, play
 from operators.base import parser_niedosteppny
 
@@ -30,16 +32,17 @@ from operators.base import parser_niedosteppny
 OPERATORZY = {
     "orange": {
         "nazwa": "Orange Polska",
+        "modul": _orange_mod,
         "autodetect": orange_autodetect,
         "parse": parse_orange,
         "parse_nazwiska": parse_orange_nazwiska,
         "parse_bts": parse_orange_bts,
     },
-    "tmobile": {"nazwa": "T-Mobile Polska", "autodetect": tmobile.autodetect,
+    "tmobile": {"nazwa": "T-Mobile Polska", "modul": tmobile, "autodetect": tmobile.autodetect,
                 "parse": tmobile.parse, "parse_nazwiska": tmobile.parse_nazwiska, "parse_bts": tmobile.parse_bts},
-    "plus":    {"nazwa": "Plus (Polkomtel)", "autodetect": plus.autodetect,
+    "plus":    {"nazwa": "Plus (Polkomtel)", "modul": plus, "autodetect": plus.autodetect,
                 "parse": plus.parse_plus, "parse_nazwiska": plus.parse_plus_nazwiska, "parse_bts": plus.parse_bts},
-    "play":    {"nazwa": "Play (P4)",        "autodetect": play.autodetect,
+    "play":    {"nazwa": "Play (P4)",        "modul": play, "autodetect": play.autodetect,
                 "parse": play.parse, "parse_nazwiska": play.parse_nazwiska, "parse_bts": play.parse_bts},
 }
 
@@ -578,11 +581,83 @@ def najczestszy_numer(df):
     both = both[both.str.match(r"^\d{6,}$", na=False)]
     return both.value_counts().idxmax()
 
-def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None):
+
+
+
+
+def zgadnij_operatora_folderu(folder: str):
+    """Zgaduje operatora po zawartosci folderu (pdf -> orange, xls -> plus)."""
+    xls = glob.glob(os.path.join(folder, "*.xls*"))
+    pdfs = glob.glob(os.path.join(folder, "*.pdf"))
+    if xls and not pdfs:
+        return "plus"
+    if pdfs and not xls:
+        return "orange"
+    # mieszane/brak: pytaj wg wielkosci plikow
+    return "orange" if len(pdfs) >= len(xls) else "plus"
+
+def pliki_z_folderu(operator_key: str, folder: str):
+    """
+    Tryb reczny: wszystkie zestawy danego operatora w folderze scalone w JEDEN
+    zestaw (wykaz + transmisja + nazwiska + bts). Zwraca (df, msisdn, nazwiska_map, historia, bts_map).
+    """
+    import pandas as pd
+    info = OPERATORZY[operator_key]
+    mod = info["modul"]
+    ds = mod.datasets(folder) if hasattr(mod, "datasets") else []
+    if not ds:
+        return None, None, {}, {}, {}
+    ramki, msisdn, msisdn_dane = [], None, None
+    nazwiska_map, historia, bts_map = {}, {}, {}
+    for z in ds:
+        if z.get("wykaz"):
+            d, ms = info["parse"](z["wykaz"])
+            if ms:
+                msisdn = msisdn or ms
+            if d is not None and not d.empty:
+                msisdn_dane = msisdn_dane or ms  # numer z zestawu, ktory MA rekordy
+            ramki.append(d)
+        if z.get("transmisja"):
+            d2, ms2 = info["parse"](z["transmisja"])
+            if ms2:
+                msisdn = msisdn or ms2
+            if d2 is not None and not d2.empty:
+                msisdn_dane = msisdn_dane or ms2
+                d2 = d2.copy()
+                d2["typ"] = "DATA"
+                ramki.append(d2)
+        if z.get("nazwiska") and info.get("parse_nazwiska"):
+            try:
+                m2, h2 = info["parse_nazwiska"](z["nazwiska"])
+                nazwiska_map.update(m2)
+                for n, w in h2.items():
+                    historia.setdefault(n, [])
+                    for wp in w:
+                        if wp not in historia[n]:
+                            historia[n].append(wp)
+            except Exception:
+                pass
+        if z.get("bts") and info.get("parse_bts"):
+            try:
+                bts_map.update(info["parse_bts"](z["bts"]))
+            except Exception:
+                pass
+    ramki = [d for d in ramki if d is not None and not d.empty]
+    df = pd.concat(ramki, ignore_index=True) if ramki else pd.DataFrame()
+    if not df.empty and msisdn_dane:
+        msisdn = msisdn_dane
+    return df, msisdn, nazwiska_map, historia, bts_map
+
+def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None,
+            df_pre=None, nazwiska_map_pre=None, historia_pre=None, bts_map_pre=None, msisdn_pre=None):
     historia_kontaktow = {}
     info = OPERATORZY[operator_key]
-    print(f"\n[+] Parsowanie pliku ({info['nazwa']}): {plik}")
-    df, msisdn_z_naglowka = info["parse"](plik, verbose=True)
+    if df_pre is not None:
+        df, msisdn_z_naglowka = df_pre, msisdn_pre
+        print(f"\n[+] Dane wczytane z folderu ({info['nazwa']}): {len(df)} rekordow")
+    else:
+        print(f"\n[+] Parsowanie pliku ({info['nazwa']}): {plik}")
+        df, msisdn_z_naglowka = info["parse"](plik, verbose=True)
     if df.empty:
         print("[!] Nie udalo sie sparsowac zadnego rekordu z pliku. Sprawdz format.")
         return
@@ -593,17 +668,23 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
     nazwiska_map = {}
     historia = {}
     historia_abonentow = {}
+    if nazwiska_map_pre is not None:
+        nazwiska_map = nazwiska_map_pre
+        historia = historia_pre or {}
     parse_nazwiska = info.get("parse_nazwiska")
-    if parse_nazwiska and plik_nazwiska and os.path.exists(plik_nazwiska):
+    if not nazwiska_map and parse_nazwiska and plik_nazwiska and os.path.exists(plik_nazwiska):
         print(f"[+] Parsowanie pliku z nazwiskami: {plik_nazwiska}")
         nazwiska_map, historia = parse_nazwiska(plik_nazwiska, verbose=True)
         historia_abonentow = historia
 
-    bts_map = {}
-    parse_bts = info.get("parse_bts")
-    if parse_bts and plik_bts and os.path.exists(plik_bts):
-        print(f"[+] Parsowanie pliku z adresami BTS: {plik_bts}")
-        bts_map = parse_bts(plik_bts, verbose=True)
+    if bts_map_pre is not None:
+        bts_map = bts_map_pre
+    else:
+        bts_map = {}
+        parse_bts = info.get("parse_bts")
+        if parse_bts and plik_bts and os.path.exists(plik_bts):
+            print(f"[+] Parsowanie pliku z adresami BTS: {plik_bts}")
+            bts_map = parse_bts(plik_bts, verbose=True)
 
     kp = kontakty_zdarzenia(df, target, nazwiska_map)
     ks = kontakty_sms(df, target, nazwiska_map)
@@ -721,131 +802,72 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
     print(f"[+] RAPORT KONCOWY CSV: {os.path.abspath(raport_csv_path)}")
 
 
-def wybierz_operatora_interaktywnie():
-    klucze = list(OPERATORZY.keys())
-    print("\nDostepni operatorzy:")
-    for i, k in enumerate(klucze, 1):
-        print(f"  [{i}] {OPERATORZY[k]['nazwa']}")
-    while True:
-        wyb = input(f"Wybierz operatora [1-{len(klucze)}]: ").strip()
-        if wyb.isdigit() and 1 <= int(wyb) <= len(klucze):
-            return klucze[int(wyb) - 1]
-        print("Nieprawidlowy wybor.")
-
-def zapytaj_o_plik(opis):
-    while True:
-        odp = input(f"\nCzy posiadasz plik z {opis}? [t/n]: ").strip().lower()
-        if odp in ("n", "nie", "no", ""):
-            print(f"  -> Pominieto plik z {opis}.")
-            return None
-        if odp in ("t", "tak", "yes", "y"):
-            sciezka = input_path(f"  Podaj sciezke do pliku z {opis}: ").strip()
-            if os.path.exists(sciezka):
-                return sciezka
-            print(f"  [!] Plik nie istnieje: {sciezka}. Sprobuj ponownie lub pomin.")
-            continue
-        print("  Wpisz 't' (tak) lub 'n' (nie).")
-
 def main():
-    ap = argparse.ArgumentParser(description="Analiza bilingow")
-    ap.add_argument("--operator", choices=list(OPERATORZY.keys()))
-    ap.add_argument("--plik", help="glowny plik z wykazem polaczen (PDF)")
-    ap.add_argument("--plik-nazwiska", help="PDF z nazwiskami / firmami")
-    ap.add_argument("--plik-bts", help="PDF z adresami stacji BTS")
-    ap.add_argument("--numer", help="numer analizowany (domyslnie: auto-detekcja)")
+    ap = argparse.ArgumentParser(description="Analiza bilingow — autodetekcja")
+    ap.add_argument("--folder", help="pojedynczy folder abonenta (automatycznie input/<operator>/<abonent>)")
+    ap.add_argument("--numer", help="numer analizowany (domyslnie: auto-detekcja z naglowka)")
     ap.add_argument("--outdir", default="./raport_bilingow")
-    ap.add_argument("--folder", help="folder z plikami Orange (autodetekcja *_wykaz.pdf, *_daneOsobowe.pdf, *_bts.pdf)")
+    ap.add_argument("--dane", default="./input", help="katalog glowny z danymi (domyslnie: ./input)")
     args = ap.parse_args()
 
-    # Autodetekcja plikow z folderu
+    print("=== Analiza bilingow — toolkit (autodetekcja) ===")
+
+    # Tryb 1: pojedynczy folder
     if args.folder:
         if not os.path.isdir(args.folder):
             print(f"[!] Podana sciezka nie jest folderem: {args.folder}")
             sys.exit(1)
-        plik, plik_nazwiska, plik_bts = autodetect_pliki(args.folder)
-        if not plik:
-            print(f"[!] Nie znaleziono pliku *_wykaz.pdf w folderze: {args.folder}")
+        operator_key = zgadnij_operatora_folderu(args.folder)
+        df_f, ms_f, naz_f, hist_f, bts_f = pliki_z_folderu(operator_key, args.folder)
+        if df_f is None or (df_f.empty and not ms_f):
+            print(f"[!] Nie znaleziono danych operatora '{operator_key}' w: {args.folder}")
             sys.exit(1)
-        print(f"[+] Autodetekcja w folderze: {args.folder}")
-        print(f"    Wykaz: {plik or '-'}")
-        print(f"    Dane osobowe: {plik_nazwiska or '-'}")
-        print(f"    BTS: {plik_bts or '-'}")
-        operator_key = args.operator or "orange"
-        uruchom(operator_key, plik, args.numer, args.outdir,
-                plik_nazwiska=plik_nazwiska, plik_bts=plik_bts)
+        uruchom(operator_key, None, args.numer, args.outdir,
+                df_pre=df_f, nazwiska_map_pre=naz_f or {}, historia_pre=hist_f or {},
+                bts_map_pre=bts_f or {}, msisdn_pre=ms_f)
         return
 
-    if args.operator and args.plik:
-        uruchom(args.operator, args.plik, args.numer, args.outdir,
-                plik_nazwiska=args.plik_nazwiska, plik_bts=args.plik_bts)
-        return
+    # Tryb 2: autodetekcja ./input
+    if not os.path.isdir(args.dane):
+        print(f"[!] Brak katalogu {args.dane} — umiesc dane w strukturze <operator>/<abonent>/")
+        sys.exit(1)
+    from common import skanuj_dane
+    pozycje = skanuj_dane(args.dane, verbose=False)
+    if not pozycje:
+        print(f"[!] Brak danych w {args.dane} — umiesc podfoldery abonentow w input/<operator>/")
+        sys.exit(1)
 
-    print("=== Analiza bilingow — toolkit ===")
+    print(f"\n[+] Wykryto dane w {args.dane}: {len(pozycje)} folderow abonentow.")
+    for p in pozycje[:20]:
+        print(f"    - {p['operator']}/{p['abonent']}")
+    if len(pozycje) > 20:
+        print(f"    ... i {len(pozycje)-20} kolejnych")
 
-    # Auto-skan ./input — jesli sa tam dane, nie pytamy o sciezki
-    if os.path.isdir("./input"):
-        from common import skanuj_dane
-        pozycje = skanuj_dane("./input", verbose=False)
-        pozycje = [p for p in pozycje if p["abonent"] != "README.txt"]
-        if pozycje:
-            print(f"\n[+] Wykryto dane w ./input: {len(pozycje)} folderow abonentow.")
-            for p in pozycje[:20]:
-                print(f"    - {p['operator']}/{p['abonent']}")
-            if len(pozycje) > 20:
-                print(f"    ... i {len(pozycje)-20} kolejnych")
-            while True:
-                odp = input("\nAnalizowac wszystkich (analiza krzyzowa)? [t/n]: ").strip().lower()
-                if odp in ("t", "tak", "y", "yes"):
-                    import analizaKrzyzowa
-                    analizaKrzyzowa.przebieg("./input", "./raport_krzyzowy")
-                    return
-                if odp in ("n", "nie", ""):
-                    break
-                print("  Wpisz 't' lub 'n'.")
+    while True:
+        odp = input("\nAnalizowac wszystkich (analiza krzyzowa)? [t/n]: ").strip().lower()
+        if odp in ("t", "tak", "y", "yes"):
+            import analizaKrzyzowa
+            analizaKrzyzowa.przebieg(args.dane, "./raport_krzyzowy")
+            return
+        if odp in ("n", "nie", ""):
+            break
 
-    operator_key = args.operator or wybierz_operatora_interaktywnie()
-
-    plik = args.plik
-    plik_nazwiska = args.plik_nazwiska
-    plik_bts = args.plik_bts
-
-    if not plik:
-        while True:
-            sciezka = input_path("\nPodaj sciezke do pliku z wykazem polaczen (lub folderu z plikami PDF): ").strip()
-            if os.path.isdir(sciezka):
-                plik_auto, plik_nazwiska_auto, plik_bts_auto = autodetect_pliki(sciezka)
-                if plik_auto:
-                    print(f"[+] Wykryto folder. Autodetekcja plikow:")
-                    print(f"    Wykaz: {plik_auto}")
-                    if plik_nazwiska_auto:
-                        print(f"    Dane osobowe: {plik_nazwiska_auto}")
-                    if plik_bts_auto:
-                        print(f"    BTS: {plik_bts_auto}")
-                    plik = plik_auto
-                    if not plik_nazwiska:
-                        plik_nazwiska = plik_nazwiska_auto
-                    if not plik_bts:
-                        plik_bts = plik_bts_auto
-                    break
-                else:
-                    print(f"[!] W folderze nie znaleziono pliku *_wykaz.pdf.")
-                    continue
-            elif os.path.exists(sciezka):
-                plik = sciezka
-                break
-            print(f"[!] Sciezka nie istnieje: {sciezka}")
-
-    if plik_nazwiska is None and not args.plik:
-        plik_nazwiska = zapytaj_o_plik("nazwiskami / firmami przypisanymi do numerow")
-
-    if plik_bts is None and not args.plik:
-        plik_bts = zapytaj_o_plik("adresami stacji BTS")
-
-    numer = args.numer or input("\nNumer analizowany (Enter = auto-detekcja): ").strip() or None
-    outdir = input(f"\nKatalog wyjsciowy [{args.outdir}]: ").strip() or args.outdir
-
-    uruchom(operator_key, plik, numer, outdir,
-            plik_nazwiska=plik_nazwiska, plik_bts=plik_bts)
-
-if __name__ == "__main__":
-    main()
+    print("\nWybierz folder do analizy pojedynczego abonenta:")
+    for idx, p in enumerate(pozycje, 1):
+        print(f"  [{idx}] {p['operator']}/{p['abonent']}")
+    while True:
+        odp = input("Wybierz folder [1-%d] (pusty Enter = koniec): " % len(pozycje)).strip().lower()
+        if odp == "":
+            print("[!] Konczymy.")
+            sys.exit(0)
+        if odp.isdigit() and 1 <= int(odp) <= len(pozycje):
+            wybr = pozycje[int(odp) - 1]
+            df_f, ms_f, naz_f, hist_f, bts_f = pliki_z_folderu(wybr["operator"], wybr["folder"])
+            if df_f is None or (df_f.empty and not ms_f):
+                print("[!] Brak danych w tym folderze.")
+                continue
+            uruchom(wybr["operator"], None, args.numer, args.outdir,
+                    df_pre=df_f, nazwiska_map_pre=naz_f or {}, historia_pre=hist_f or {},
+                    bts_map_pre=bts_f or {}, msisdn_pre=ms_f)
+            return
+        print("  Nieprawidlowy wybor.")
