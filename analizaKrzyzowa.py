@@ -662,18 +662,13 @@ def raport_per_numer(r, outdir):
 
     target_dir = os.path.join(outdir, target)
     os.makedirs(target_dir, exist_ok=True)
-    p_txt = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.txt")
-    p_xlsx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.xlsx")
-    with open(p_txt, "w", encoding="utf-8") as f:
-        f.write(ab.generuj_raport_txt(target, kp, ks, bts, imei_df, abonent_info, inet, od, do,
-                                      historia_ab, hk, bloki=None, imsi_df=imsi_df,
-                                      ip_df=ip_df))
-    ab.generuj_raport_csv(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_xlsx,
-                          historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df)
     p_docx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
     ab.generuj_raport_docx(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_docx,
                            historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df)
-    print(f"    raport: {p_txt}")
+    p_xlsx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.xlsx")
+    ab.generuj_raport_csv(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_xlsx,
+                          historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df)
+    print(f"    raport: {p_docx}")
 
 
 # ══════════════════════════════════════════════════════════════════════

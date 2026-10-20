@@ -1,6 +1,19 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
 
+## 2026-10-20 15:15
+### Zmienione
+- TXT wycofany: raport per numer = DOCX + XLSX; zbiorczy krzyzowy = TXT + XLSX
+- IMEI: kolumna "Abonent" zamiast "Uwagi" — imie/nazwa abonenta analizowanego
+  albo numer + nazwa kontrahenta (do 3 numerow na urzadzenie)
+- Adresy IP: kolumny Od/Do (zakres od pierwszego do ostatniego odnotowania)
+  w DOCX i XLSX
+
+## 2026-10-20 15:20
+### Dodane
+- Adresy IP: kolumny Od/Do (zakres od pierwszego do ostatniego odnotowania,
+  przerwy mozliwe) w TXT/XLSX/DOCX
+
 ## 2026-10-20 15:10
 ### Zmienione
 - UWAGA o "roznych urzadzeniach" w sekcji IMEI: tylko gdy >1 urzadzenie GLOWNE

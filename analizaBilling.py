@@ -131,10 +131,9 @@ def bts_polaczone(df, target, bts_map=None):
     return out
 
 def imei_dla_numeru(df, target, nazwiska_map=None):
-    """Urzadzenia (IMEI) przy numerze — z uwzglednieniem czyjego urzadzenia.
-    Uwagi: 'glowne' = IMEI po stronie analizowanego numeru (jego urzadzenie);
-    'kontrahent <numer> <nazwa?>' = IMEI drugiej strony polaczenia (siec przekazuje
-    takze urzadzenia kontrahentow) — podajemy numer, ktory tego urzadzenia uzywal.
+    """Urzadzenia (IMEI) przy numerze — z oznaczeniem, kto uzywal urzadzenia.
+    Kolumna 'abonent': imie i nazwisko / firma ABONENTA analizowanego numeru
+    albo numer + nazwa osoby, ktorej to urzadzenie (kontrahenta).
     IMEI grupowane po 14 cyfrach bazowych (cyfra 15=check, 16=SVN — to samo urzadzenie)."""
     sub = df[(df["strona_a"] == target) | (df["strona_b"] == target)]
     wlasne = pd.concat([
@@ -154,7 +153,10 @@ def imei_dla_numeru(df, target, nazwiska_map=None):
     licz = {}
     for im in wlasne:
         licz[im] = licz.get(im, 0) + 1
-    uwagi = {im: "glowne" for im in licz}
+    nazwa_ab = ""
+    if nazwiska_map:
+        nazwa_ab = (nazwiska_map.get(target, {}) or {}).get("nazwa", "")
+    abonent = {im: (nazwa_ab or "(glowny)") for im in licz}
     if not obce.empty:
         obce = obce[obce["imei"].notna() & (obce["imei"].astype(str).str.strip() != "")
                     & ~obce["imei"].isin(NIE_IMEI)]
@@ -169,24 +171,28 @@ def imei_dla_numeru(df, target, nazwiska_map=None):
                 if nazwiska_map:
                     nazwa = (nazwiska_map.get(num, {}) or {}).get("nazwa", "")
                 opisy.append(f"{num} {nazwa}".strip())
-            uwagi[im] = "kontrahent: " + "; ".join(opisy)
-    out = pd.DataFrame([(im, n, uwagi[im]) for im, n in licz.items()],
-                       columns=["imei", "liczba_zdarzen", "uwagi"])
+            abonent[im] = "; ".join(opisy) if opisy else "(kontrahent)"
+    out = pd.DataFrame([(im, n, abonent[im]) for im, n in licz.items()],
+                       columns=["imei", "liczba_zdarzen", "abonent"])
     return out.sort_values("liczba_zdarzen", ascending=False).reset_index(drop=True)
 
 def ip_dla_numeru(df, target):
-    """Adresy IP przydzielane numerowi w sesjach DATA — od najczesciej przyznawanych."""
+    """Adresy IP przydzielane numerowi w sesjach DATA — od najczescie przyznawanych.
+    Do kazdego IP: zakres Od/Do (od pierwszego do ostatniego odnotowania; moga byc przerwy)."""
     sub = df[df["typ"] == "DATA"]
-    if "a_key" not in sub.columns:  # tryb reczny: brak kluczy — liczymy z stron
+    if "a_key" not in sub.columns:
         sub = sub.assign(a_key=sub["strona_a"].map(klucz_numer),
                          b_key=sub["strona_b"].map(klucz_numer))
     sub = sub[(sub["a_key"] == target) | (sub["b_key"] == target)]
     if "ip" not in sub.columns:
-        return pd.DataFrame(columns=["ip", "liczba_sesji"])
-    ip = sub["ip"]
-    ip = ip[ip.notna() & (ip.astype(str).str.strip() != "")]
-    out = ip.value_counts().rename_axis("ip").reset_index(name="liczba_sesji")
+        return pd.DataFrame(columns=["ip", "liczba_sesji", "okres_od", "okres_do"])
+    sub = sub[sub["ip"].notna() & (sub["ip"].astype(str).str.strip() != "")]
+    g = sub.groupby(sub["ip"].astype(str).str.strip())
+    out = g.agg(liczba_sesji=("ip", "size"),
+                okres_od=("data", "min"),
+                okres_do=("data", "max")).reset_index()
     return out.sort_values("liczba_sesji", ascending=False).reset_index(drop=True)
+
 
 def imsi_dla_numeru(df, target):
     """Licznik IMSI (karty SIM) uzywanych przez numer — zmiana IMSI = wymiana karty SIM."""
@@ -613,9 +619,9 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             _w(["Internet (DATA)", inet_b["razem"], fmt_czas(inet_b["czas_s"]), inet_b["zakres_czasu"]])
             ip_b = blok.get('ip')
             if ip_b is not None and not ip_b.empty:
-                _w(["ADRESY IP (od najczesciej przyznawanych)", "Liczba sesji"])
+                _w(["ADRESY IP (od najczesciej przyznawanych)", "Liczba sesji", "Od", "Do"])
                 for _, r in ip_b.iterrows():
-                    _w([r['ip'], r['liczba_sesji']])
+                    _w([r['ip'], r['liczba_sesji'], r.get('okres_od', ''), r.get('okres_do', '')])
         else:
             _w(["Internet (DATA)", 0, fmt_czas(0), "Brak zdarzen w tym okresie."])
         _w([])
@@ -660,14 +666,9 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
         imei_b = blok['imei']
         if not imei_b.empty:
             _w(["SEKCJA 4: URZĄDZENIA (IMEI)"])
-            _w(["Lp", "IMEI (baza 14 cyfr)", "Liczba zdarzeń", "Uwagi"])
+            _w(["Lp", "IMEI (baza 14 cyfr)", "Liczba zdarzeń", "Abonent"])
             for i, (_, r) in enumerate(imei_b.iterrows(), 1):
-                _w([i, r['imei'], r['liczba_zdarzen'], r.get('uwagi', '')])
-            _gl = imei_b[imei_b['uwagi'] == 'glowne']
-            if len(_gl) > 1:
-                _w(["UWAGA:", f"Wykryto {len(_gl)} roznych urzadzen (IMEI) dla numeru {target}."])
-            if 'uwagi' in imei_b.columns and (imei_b['uwagi'] == 'kontrahent').any():
-                _w(["UWAGA:", "'kontrahent' = IMEI urzadzenia drugiej strony polaczenia (nie numeru analizowanego)."])
+                _w([i, r['imei'], r['liczba_zdarzen'], r.get('abonent', '')])
             _w([])
         else:
             _w(["SEKCJA 4: URZĄDZENIA (IMEI)"])
@@ -929,12 +930,7 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
     target_dir = os.path.join(outdir, target)
     os.makedirs(target_dir, exist_ok=True)
 
-    raport_txt = generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do,
-                                    historia_abonentow, historia_kontaktow, bloki=bloki, imsi_df=imsi_df,
-                                    ip_df=ip_df)
-    raport_txt_path = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.txt")
-    with open(raport_txt_path, "w", encoding="utf-8") as f:
-        f.write(raport_txt)
+    # TXT wycofany — raporty DOCX + XLSX
 
     raport_xlsx_path = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.xlsx")
     generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, raport_xlsx_path,
@@ -946,8 +942,7 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
                                   raport_docx_path, historia_abonentow, historia_kontaktow,
                                   bloki=bloki, imsi_df=imsi_df, ip_df=ip_df)
 
-    print("\n" + raport_txt)
-    print(f"\n[+] RAPORT KONCOWY TXT:  {os.path.abspath(raport_txt_path)}")
+    print(f"\n[+] RAPORT KONCOWY DOCX: {os.path.abspath(raport_docx_path)}")
     print(f"[+] RAPORT KONCOWY XLSX: {os.path.abspath(raport_xlsx_path)}")
     if ok_docx:
         print(f"[+] RAPORT KONCOWY DOCX: {os.path.abspath(raport_docx_path)}")
@@ -1011,14 +1006,18 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
             f"Transfer: {inet.get('laczny_transfer_mb', 0):.2f} MB")
         if ip_df is not None and not ip_df.empty:
             doc.add_paragraph("Adresy IP (od najczesciej przyznawanych):")
-            t = doc.add_table(rows=1, cols=2)
+            t = doc.add_table(rows=1, cols=4)
             t.style = "Light Grid Accent 1"
             t.rows[0].cells[0].text = "Adres IP"
             t.rows[0].cells[1].text = "Liczba sesji"
+            t.rows[0].cells[2].text = "Od"
+            t.rows[0].cells[3].text = "Do"
             for _, r in ip_df.iterrows():
                 c = t.add_row().cells
                 c[0].text = str(r["ip"])
                 c[1].text = str(r["liczba_sesji"])
+                c[2].text = str(r.get("okres_od", ""))
+                c[3].text = str(r.get("okres_do", ""))
     else:
         doc.add_paragraph("Brak zdarzen transmisji danych.")
 
@@ -1041,19 +1040,14 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
     if imei_df is not None and not imei_df.empty:
         t = doc.add_table(rows=1, cols=4)
         t.style = "Light Grid Accent 1"
-        for i, h in enumerate(["Lp", "IMEI (baza 14 cyfr)", "Liczba zdarzen", "Uwagi"]):
+        for i, h in enumerate(["Lp", "IMEI (baza 14 cyfr)", "Liczba zdarzen", "Abonent"]):
             t.rows[0].cells[i].text = h
         for lp, (_, r) in enumerate(imei_df.iterrows(), 1):
             c = t.add_row().cells
             c[0].text = str(lp)
             c[1].text = str(r["imei"])
             c[2].text = str(r["liczba_zdarzen"])
-            c[3].text = str(r.get("uwagi", ""))
-        _gl = imei_df[imei_df['uwagi'] == 'glowne']
-        if len(_gl) > 1:
-            doc.add_paragraph(f"UWAGA: Wykryto {len(_gl)} roznych urzadzen (IMEI) dla numeru {target}.")
-        if 'uwagi' in imei_df.columns and (imei_df['uwagi'] == 'kontrahent').any():
-            doc.add_paragraph("'kontrahent' = IMEI urzadzenia drugiej strony polaczenia (nie numeru analizowanego).")
+            c[3].text = str(r.get("abonent", ""))
     else:
         doc.add_paragraph("Brak danych IMEI.")
 

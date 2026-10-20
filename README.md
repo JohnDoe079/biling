@@ -1,5 +1,5 @@
 # Biling Toolkit — analiza bilingow multi-operator
-WERSJA: 2026-10-20 15:10  (format wersji: RRRR-MM-DD GG:MM)
+WERSJA: 2026-10-20 15:20  (format wersji: RRRR-MM-DD GG:MM)
 
 ## CEL PROJEKTU
 Narzedzie do analizy bilingow od 4 operatorow (Orange, T-Mobile, Plus, Play),
