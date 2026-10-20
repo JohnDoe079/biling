@@ -177,6 +177,7 @@ def parse_plus(path: str, verbose: bool = False):
             "bts_b": "",
             "imei_b": "",
             "imsi_b": "",
+            "ip": kol("ip").map(_czysto),
         })
 
     out = out[out["strona_a"].astype(str).str.strip() != ""]

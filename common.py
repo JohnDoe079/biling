@@ -187,6 +187,11 @@ def _data_min(d):
 def _data_max(d):
     return d if d else "9999-99-99"
 
+def klucz_sort_numer(n):
+    """Sortowanie numeryczne napisow-cyfr: najpierw dlugosc, potem wartosc."""
+    n = str(n)
+    return (len(n), n)
+
 def pelne_dane(w) -> bool:
     """Czy wpis zawiera twarde identyfikatory (PESEL/NIP/adres/SIM/krs/regon)."""
     return bool(w.get("pesel") or w.get("nip") or w.get("adres")
@@ -216,7 +221,10 @@ def _polacz_nazwy(a, b):
         wa = a[len(pref[0]) + 1:]
         wb = b[len(pref[0]) + 1:]
         if wa and wb and " " not in wa.strip() and " " not in wb.strip():
-            return f"{pref[0]} {wa.strip()} i {wb.strip()}"
+            # kolejnosc slow KANONICZNA (alfabetyczna) — zawsze ta sama forma,
+            # niezaleznie od kolejnosci wierszy w plikach operatora
+            w1, w2 = sorted([wa.strip(), wb.strip()])
+            return f"{pref[0]} {w1} i {w2}"
     return f"{a} | {b}"
 
 def dedup_historia(wpisy):

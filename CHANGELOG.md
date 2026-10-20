@@ -1,6 +1,60 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
 
+## 2026-10-20 14:05
+### Naprawione
+- Tryb reczny (--folder / wybor z listy): ip_dla_numeru wymagal kolumn a_key/b_key
+  (istnieja tylko po analizie krzyzowej) — KeyError; teraz liczy klucze z stron,
+  gdy kolumn brakuje. Tabela IP dziala w obu trybach.
+
+## 2026-10-20 11:05
+### Naprawione
+- Sekcja IP: pelne adresy IPv6 w TXT (kolumna poszerzona do 42 znakow)
+
+## 2026-10-20 10:55
+### Dodane
+- Sekcja INTERNET: tabela ADRESY IP (od najczesciej przyznawanych) w TXT/CSV/DOCX;
+  parser Plus transmisji wyciaga kolumne IP
+- Sekcja BTS: Plus nie podaje kodu BTS — adres stacji trafia do kolumny "Adres stacji",
+  w "Kod BTS" wpis "(brak kodu)"
+
+## 2026-10-20 10:45
+### Naprawione
+- Sekcje B i C raportu krzyzowego: brakujace kolumny FWD (przekierowania) —
+  "Razem" liczyl FWD, a rozbicie nie pokazywalo (2 = 1 voice + 1 FWD; 133 vs 99)
+### Dodane
+- Kolumny "FWD przych"/"FWD wych" w sekcjach B i C (TXT+CSV); suma Razem =
+  voice + proby + SMS + FWD + DATA (zweryfikowane: 0 niezgodnych wierszy)
+
+## 2026-10-20 09:50
+### Zmienione
+- Kolejnosc raportu per numer: DANE ABONENTA (+historia) -> SEKCJA 1 POLACZENIA
+  (kontakty) -> DANE OSOBOWE KONTAKTOW -> internet/BTS/IMEI/IMSI (TXT+CSV)
+- Liczby zdarzen calkowite w CSV (nie 487.0 — fillna(0).astype(int) w polacz_kontakty)
+- Kontakt bez danych = "brak danych" (bez nawiasow) w tabeli polaczen
+### Naprawione
+- Tytuly sekcji 1 ujednolicone w TXT/CSV/DOCX
+
+## 2026-10-20 09:15
+### Zmienione
+- _polacz_nazwy(): kolejnosc rozniacych sie slow KANONICZNA (alfabetyczna) —
+  zawsze jedna forma "nie obslugiwany przez Netia i Polkomtel",
+  niezaleznie od kolejnosci wierszy w plikach operatora
+
+## 2026-10-20 09:10
+### Zmienione
+- Sekcja "HISTORIA ZMIAN ABONENTOW KONTAKTOW" przemianowana na
+  "DANE OSOBOWE KONTAKTOW (numery, z ktorymi kontaktowal sie analizowany)"
+  (to dane kontaktow, nie historia zmian)
+- Sortowanie numerow w tej sekcji NUMERYCZNE rosnaco (nie leksykograficzne)
+
+## 2026-10-20 09:00
+### Naprawione
+- "blad raportu: float object has no attribute strip" — kontakt wystepujacy
+  tylko w SMS mial NaN w zakresie czasu (polacz_kontakty); NaN czyszczone
+- KeyError nazwa_kontaktu gdy SMS bez danych osobowych kontaktu — kolumna
+  domyslnie pusta
+
 ## 2026-10-20 08:45
 ### Zmienione
 - dedup_historia(): Plus odpowiada z DWOCH BAZ (Polkomtel + Netia) — wpisy

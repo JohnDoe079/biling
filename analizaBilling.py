@@ -16,8 +16,8 @@ import pandas as pd
 
 from common import (
     autodetect_pliki, dane_abonenta, fmt_czas, input_path,
-    normalizuj_numer, okres_bilingow, BLANK, NIE_BTS, NIE_IMEI, _clean_counts
-)
+    normalizuj_numer, okres_bilingow, BLANK, NIE_BTS, NIE_IMEI, _clean_counts,
+                    klucz_numer)
 from operators.orange import (parse_orange, parse_orange_nazwiska, parse_orange_bts,
                               autodetect as orange_autodetect)
 from operators import orange as _orange_mod
@@ -137,6 +137,20 @@ def imei_dla_numeru(df, target):
     all_imei = all_imei[~all_imei.isin(NIE_IMEI) & all_imei.notna()]
     return all_imei.value_counts().rename_axis("imei").reset_index(name="liczba_zdarzen")
 
+def ip_dla_numeru(df, target):
+    """Adresy IP przydzielane numerowi w sesjach DATA — od najczesciej przyznawanych."""
+    sub = df[df["typ"] == "DATA"]
+    if "a_key" not in sub.columns:  # tryb reczny: brak kluczy — liczymy z stron
+        sub = sub.assign(a_key=sub["strona_a"].map(klucz_numer),
+                         b_key=sub["strona_b"].map(klucz_numer))
+    sub = sub[(sub["a_key"] == target) | (sub["b_key"] == target)]
+    if "ip" not in sub.columns:
+        return pd.DataFrame(columns=["ip", "liczba_sesji"])
+    ip = sub["ip"]
+    ip = ip[ip.notna() & (ip.astype(str).str.strip() != "")]
+    out = ip.value_counts().rename_axis("ip").reset_index(name="liczba_sesji")
+    return out.sort_values("liczba_sesji", ascending=False).reset_index(drop=True)
+
 def imsi_dla_numeru(df, target):
     """Licznik IMSI (karty SIM) uzywanych przez numer — zmiana IMSI = wymiana karty SIM."""
     sub = df[(df["strona_a"] == target) | (df["strona_b"] == target)]
@@ -205,10 +219,20 @@ def stats_dla_okresu(df, target, data_od, data_do):
 
 
 
+def _czysty_zakres(v):
+    if v is None:
+        return ""
+    try:
+        if v != v:  # NaN
+            return ""
+    except Exception:
+        pass
+    return str(v).strip()
+
 def _z(a, b):
     """Polacz zakresy 'YYYY-MM-DD - YYYY-MM-DD' (min-max)."""
-    a = (a or "").strip()
-    b = (b or "").strip()
+    a = _czysty_zakres(a)
+    b = _czysty_zakres(b)
     if not a:
         return b
     if not b:
@@ -228,26 +252,32 @@ def polacz_kontakty(kp, ks):
     for c in ("sms_wychodzace", "sms_przychodzace", "sms_razem"):
         if c not in s.columns:
             s[c] = 0
+    if "nazwa_kontaktu" not in s.columns:
+        s["nazwa_kontaktu"] = ""
     s = s[["numer_kontaktu", "nazwa_kontaktu", "sms_wychodzace", "sms_przychodzace", "sms_razem", "zakres_czasu"]]
+    for c in ("nazwa_kontaktu", "zakres_czasu"):
+        if c not in k.columns:
+            k[c] = ""
     m = k.merge(s, on="numer_kontaktu", how="outer", suffixes=("", "_s"))
     for c in ("voice_wychodzace", "voice_przychodzace", "proba_razem", "razem",
               "czas_wychodzacy_s", "czas_przychodzacy_s",
               "sms_wychodzace", "sms_przychodzace", "sms_razem"):
         if c in m.columns:
-            m[c] = m[c].fillna(0)
+            m[c] = m[c].fillna(0).astype(int)  # liczby calkowite (nie 487.0)
     m["nazwa_kontaktu"] = m["nazwa_kontaktu"].fillna(m.get("nazwa_kontaktu_s", ""))
     m["zakres_czasu"] = [_z(a, b) for a, b in zip(m["zakres_czasu"], m.get("zakres_czasu_s", ""))]
+    m["zakres_czasu"] = m["zakres_czasu"].fillna("")
     m["razem"] = m["razem"] + m["sms_razem"]
     m = m.drop(columns=[c for c in ("nazwa_kontaktu_s", "zakres_czasu_s") if c in m.columns])
     return m.sort_values("razem", ascending=False).reset_index(drop=True)
 
 def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do,
-                         historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None):
+                         historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None, ip_df=None):
     if bloki is None:
         bloki = [{
             'naglowek': None,
             'kp': kp, 'ks': ks, 'bts': bts, 'imei': imei_df, 'inet': inet,
-            'imsi': imsi_df,
+            'imsi': imsi_df, 'ip': ip_df,
             'abonent': abonent, 'od': okres_od, 'do': okres_do,
             'historia_kontaktow': historia_kontaktow
         }]
@@ -301,17 +331,43 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             lines.append("-" * 120)
             lines.append("")
 
+        # SEKCJA 1 (polaczona: glosowe + proby + SMS/MMS)
+        kp_b = polacz_kontakty(blok['kp'], blok.get('ks'))
+        lines.append("-" * 140)
+        lines.append("  SEKCJA 1: POLACZENIA (glosowe + proby + SMS/MMS; bez FWD, DATA)")
+        lines.append("-" * 140)
+        if not kp_b.empty:
+            lines.append("  {:>4} {:<16} {:<30} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>14} {:>14} {:>22}".format(
+                "Lp", "Numer telefonu", "Imie i nazwisko / Firma",
+                "Swych", "Sprz", "Vwych", "Vprz", "Proby", "Razem",
+                "Czas wych", "Czas przych", "Zakres czasu"))
+            lines.append("-" * 140)
+            for i, (_, r) in enumerate(kp_b.iterrows(), 1):
+                nazwa = r.get('nazwa_kontaktu', '') or "brak danych"
+                line = "  {:>4} {:<16} {:<30} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>14} {:>14} {:>22}".format(
+                    i, r['numer_kontaktu'], nazwa[:30],
+                    int(r['sms_wychodzace']), int(r['sms_przychodzace']),
+                    int(r['voice_wychodzace']), int(r['voice_przychodzace']),
+                    int(r.get('proba_razem', 0)), int(r['razem']),
+                    fmt_czas(r['czas_wychodzacy_s']), fmt_czas(r['czas_przychodzacy_s']),
+                    r.get('zakres_czasu', ''))
+                lines.append(line)
+        else:
+            lines.append("  Brak zdarzen w tym okresie.")
+        lines.append("")
+
         hk = blok.get('historia_kontaktow')
         if hk:
             from common import pelne_dane
             lines.append("-" * 120)
-            lines.append("  HISTORIA ZMIAN ABONENTOW KONTAKTOW")
+            lines.append("  DANE OSOBOWE KONTAKTOW (numery, z ktorymi kontaktowal sie analizowany)")
             lines.append("-" * 120)
             lines.append("  {:>4} {:<16} {:<12} {:<12} {:<36} {:<16} {:<36} {:<9} {}".format(
                 "Lp", "Numer", "Data od", "Data do", "Nazwa / Firma", "PESEL/REGON", "Adres", "Dane", "Zrodlo"))
             lines.append("-" * 120)
             global_idx = 1
-            for numer, wpisy in sorted(hk.items()):
+            from common import klucz_sort_numer
+            for numer, wpisy in sorted(hk.items(), key=lambda kv: klucz_sort_numer(kv[0])):
                 for wpis in wpisy:
                     lines.append("  {:>4} {:<16} {:<12} {:<12} {:<36} {:<16} {:<36} {:<9} {}".format(
                         global_idx, numer[:16],
@@ -325,32 +381,7 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
                     global_idx += 1
             lines.append("")
 
-        # SEKCJA 1 (polaczona: glosowe + proby + SMS/MMS)
-        kp_b = polacz_kontakty(blok['kp'], blok.get('ks'))
-        lines.append("-" * 140)
-        lines.append("  SEKCJA 1: KONTAKTY (polaczenia glosowe + proby + SMS/MMS; bez FWD, DATA)")
-        lines.append("-" * 140)
-        if not kp_b.empty:
-            lines.append("  {:>4} {:<16} {:<30} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>14} {:>14} {:>22}".format(
-                "Lp", "Numer telefonu", "Imie i nazwisko / Firma",
-                "Swych", "Sprz", "Vwych", "Vprz", "Proby", "Razem",
-                "Czas wych", "Czas przych", "Zakres czasu"))
-            lines.append("-" * 140)
-            for i, (_, r) in enumerate(kp_b.iterrows(), 1):
-                nazwa = r.get('nazwa_kontaktu', '') or "(brak danych)"
-                line = "  {:>4} {:<16} {:<30} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7} {:>14} {:>14} {:>22}".format(
-                    i, r['numer_kontaktu'], nazwa[:30],
-                    int(r['sms_wychodzace']), int(r['sms_przychodzace']),
-                    int(r['voice_wychodzace']), int(r['voice_przychodzace']),
-                    int(r.get('proba_razem', 0)), int(r['razem']),
-                    fmt_czas(r['czas_wychodzacy_s']), fmt_czas(r['czas_przychodzacy_s']),
-                    r.get('zakres_czasu', ''))
-                lines.append(line)
-        else:
-            lines.append("  Brak zdarzen w tym okresie.")
-        lines.append("")
-
-        # SEKCJA 3
+        # SEKCJA 2
         inet_b = blok['inet']
         lines.append("-" * 80)
         lines.append("  SEKCJA 2: INTERNET (DATA)")
@@ -362,6 +393,14 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
                 "Internet (DATA)", inet_b["razem"], fmt_czas(inet_b["czas_s"])))
             if inet_b["zakres_czasu"]:
                 lines.append("  {:<24} {:>12} {:>24}".format("", "", inet_b["zakres_czasu"]))
+            ip_b = blok.get('ip')
+            if ip_b is not None and not ip_b.empty:
+                lines.append("")
+                lines.append("  Adresy IP (od najczesciej przyznawanych):")
+                lines.append("  {:>4} {:<42} {:>12}".format("Lp", "Adres IP", "Liczba sesji"))
+                lines.append("-" * 80)
+                for i, (_, r) in enumerate(ip_b.iterrows(), 1):
+                    lines.append("  {:>4} {:<42} {:>12}".format(i, str(r['ip'])[:42], r['liczba_sesji']))
         else:
             lines.append("  Brak zdarzen w tym okresie.")
         lines.append("")
@@ -376,9 +415,14 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
                 "Lp", "Kod BTS", "Inicjujace", "Odbierajace", "Adres stacji"))
             lines.append("-" * 100)
             for i, (_, r) in enumerate(bts_b.iterrows(), 1):
-                adres = r.get('adres_bts', '') or "(brak danych)"
+                # Plus nie podaje kodu BTS — identyfikatorem jest sam adres
+                kod = str(r['bts'])
+                adres = r.get('adres_bts', '') or ''
+                if not adres and ' ' in kod:
+                    adres = kod
                 line = "  {:>4} {:<20} {:>10} {:>10} {:<50}".format(
-                    i, r['bts'], r['inicjujace'], r['odbierajace'], adres)
+                    i, kod if ' ' not in kod else '(brak kodu)', r['inicjujace'], r['odbierajace'],
+                    adres or "(brak danych)")
                 lines.append(line)
         else:
             lines.append("  Brak zdarzen w tym okresie.")
@@ -437,7 +481,7 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
 
 
 def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, outpath,
-                       historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None):
+                       historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None, ip_df=None):
     if bloki is None:
         bloki = [{
             'naglowek': None,
@@ -486,29 +530,9 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
                 writer.writerow([f"OKRES {bi}: {blok['od']} – {blok['do']}"])
                 writer.writerow([])
 
-            hk = blok.get('historia_kontaktow')
-            if hk:
-                from common import pelne_dane
-                writer.writerow(["HISTORIA ZMIAN ABONENTOW KONTAKTOW"])
-                writer.writerow(["Lp", "Numer", "Data od", "Data do", "Nazwa / Firma", "PESEL/REGON",
-                                 "Adres", "Dane", "Zrodlo"])
-                global_idx = 1
-                for numer, wpisy in sorted(hk.items()):
-                    for wpis in wpisy:
-                        writer.writerow([global_idx, numer,
-                                         wpis.get('data_akt', '') or '-',
-                                         wpis.get('data_dezakt', '') or '-',
-                                         wpis['nazwa'] or '(brak danych)',
-                                         wpis['pesel'] or '-',
-                                         wpis['adres'] or '(brak danych)',
-                                         "pelne" if pelne_dane(wpis) else "niepelne",
-                                         wpis.get("zrodlo", "") or "-"])
-                        global_idx += 1
-                writer.writerow([])
-
             # SEKCJA 1 (polaczona: glosowe + proby + SMS/MMS)
             kp_b = polacz_kontakty(blok['kp'], blok.get('ks'))
-            writer.writerow(["SEKCJA 1: KONTAKTY (polaczenia glosowe + proby + SMS/MMS; bez FWD, DATA)"])
+            writer.writerow(["SEKCJA 1: POLACZENIA (glosowe + proby + SMS/MMS; bez FWD, DATA)"])
             writer.writerow(["Lp", "Numer telefonu", "Imię i nazwisko / Firma",
                              "SMS wychodzace", "SMS przychodzace",
                              "Polaczenie wychodzace", "Polaczenie przychodzace", "Proba polaczenia",
@@ -516,7 +540,7 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             if not kp_b.empty:
                 for i, (_, r) in enumerate(kp_b.iterrows(), 1):
                     writer.writerow([
-                        i, r['numer_kontaktu'], (r.get('nazwa_kontaktu', '') or '(brak danych)'),
+                        i, r['numer_kontaktu'], (r.get('nazwa_kontaktu', '') or 'brak danych'),
                         r['sms_wychodzace'], r['sms_przychodzace'],
                         r['voice_wychodzace'], r['voice_przychodzace'], r.get('proba_razem', 0),
                         r['razem'],
@@ -533,6 +557,11 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             writer.writerow(["Opis", "Ilość sesji", "Suma czasu", "Zakres czasu"])
             if inet_b['razem'] > 0:
                 writer.writerow(["Internet (DATA)", inet_b["razem"], fmt_czas(inet_b["czas_s"]), inet_b["zakres_czasu"]])
+                ip_b = blok.get('ip')
+                if ip_b is not None and not ip_b.empty:
+                    writer.writerow(["ADRESY IP (od najczesciej przyznawanych)", "Liczba sesji"])
+                    for _, r in ip_b.iterrows():
+                        writer.writerow([r['ip'], r['liczba_sesji']])
             else:
                 writer.writerow(["Internet (DATA)", 0, fmt_czas(0), "Brak zdarzen w tym okresie."])
             writer.writerow([])
@@ -543,11 +572,36 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             writer.writerow(["Lp", "Kod BTS", "Inicjujące", "Odbierające", "Adres stacji"])
             if not bts_b.empty:
                 for i, (_, r) in enumerate(bts_b.iterrows(), 1):
-                    writer.writerow([i, r['bts'], r['inicjujace'], r['odbierajace'],
-                                     r.get('adres_bts', '') or '(brak danych)'])
+                    kod = str(r['bts'])
+                    adres = r.get('adres_bts', '') or ''
+                    if not adres and ' ' in kod:  # Plus: brak kodu, adres = identyfikator
+                        adres = kod
+                    writer.writerow([i, kod if ' ' not in kod else '(brak kodu)',
+                                     r['inicjujace'], r['odbierajace'], adres or '(brak danych)'])
             else:
                 writer.writerow(["Brak zdarzen w tym okresie."])
             writer.writerow([])
+            hk = blok.get('historia_kontaktow')
+            if hk:
+                from common import pelne_dane
+                writer.writerow(["DANE OSOBOWE KONTAKTOW (numery, z ktorymi kontaktowal sie analizowany)"])
+                writer.writerow(["Lp", "Numer", "Data od", "Data do", "Nazwa / Firma", "PESEL/REGON",
+                                 "Adres", "Dane", "Zrodlo"])
+                global_idx = 1
+                from common import klucz_sort_numer
+                for numer, wpisy in sorted(hk.items(), key=lambda kv: klucz_sort_numer(kv[0])):
+                    for wpis in wpisy:
+                        writer.writerow([global_idx, numer,
+                                         wpis.get('data_akt', '') or '-',
+                                         wpis.get('data_dezakt', '') or '-',
+                                         wpis['nazwa'] or '(brak danych)',
+                                         wpis['pesel'] or '-',
+                                         wpis['adres'] or '(brak danych)',
+                                         "pelne" if pelne_dane(wpis) else "niepelne",
+                                         wpis.get("zrodlo", "") or "-"])
+                        global_idx += 1
+                writer.writerow([])
+
 
             # SEKCJA 5
             imei_b = blok['imei']
@@ -719,6 +773,7 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
     bts = bts_polaczone(df, target, bts_map)
     imei_df = imei_dla_numeru(df, target)
     imsi_df = imsi_dla_numeru(df, target)
+    ip_df = ip_dla_numeru(df, target)
     inet = internet_stats(df, target)
     abonent = dane_abonenta(target, nazwiska_map)
     okres_od, okres_do = okres_bilingow(df)
@@ -803,19 +858,21 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
     os.makedirs(target_dir, exist_ok=True)
 
     raport_txt = generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do,
-                                    historia_abonentow, historia_kontaktow, bloki=bloki, imsi_df=imsi_df)
+                                    historia_abonentow, historia_kontaktow, bloki=bloki, imsi_df=imsi_df,
+                                    ip_df=ip_df)
     raport_txt_path = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.txt")
     with open(raport_txt_path, "w", encoding="utf-8") as f:
         f.write(raport_txt)
 
     raport_csv_path = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.csv")
     generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, raport_csv_path,
-                       historia_abonentow, historia_kontaktow, bloki=bloki, imsi_df=imsi_df)
+                       historia_abonentow, historia_kontaktow, bloki=bloki, imsi_df=imsi_df,
+                       ip_df=ip_df)
 
     raport_docx_path = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
     ok_docx = generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do,
                                   raport_docx_path, historia_abonentow, historia_kontaktow,
-                                  bloki=bloki, imsi_df=imsi_df)
+                                  bloki=bloki, imsi_df=imsi_df, ip_df=ip_df)
 
     print("\n" + raport_txt)
     print(f"\n[+] RAPORT KONCOWY TXT:  {os.path.abspath(raport_txt_path)}")
@@ -826,7 +883,7 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
 
 
 def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, outpath,
-                        historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None):
+                        historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None, ip_df=None):
     """Raport DOCX — wymaga python-docx. Zwraca True jesli wygenerowano."""
     try:
         from docx import Document
@@ -852,7 +909,7 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
                     f"{w.get('data_akt', '')} - {w.get('data_dezakt', '') or 'obecnie'}: "
                     f"{w.get('nazwa', '')} | PESEL: {w.get('pesel', '') or '-'}", style="List Bullet 2")
 
-    doc.add_heading("SEKCJA 1: KONTAKTY (polaczenia glosowe + proby + SMS/MMS)", 1)
+    doc.add_heading("SEKCJA 1: POLACZENIA (glosowe + proby + SMS/MMS; bez FWD, DATA)", 1)
     km = polacz_kontakty(kp, ks)
     if km is not None and not km.empty:
         t = doc.add_table(rows=1, cols=9)
@@ -864,7 +921,7 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
             c = t.add_row().cells
             c[0].text = str(lp)
             c[1].text = str(r.get("numer_kontaktu", ""))
-            c[2].text = str(r.get("nazwa_kontaktu", "") or "(brak danych)")
+            c[2].text = str(r.get("nazwa_kontaktu", "") or "brak danych")
             c[3].text = str(int(r.get("sms_wychodzace", 0)))
             c[4].text = str(int(r.get("sms_przychodzace", 0)))
             c[5].text = str(int(r.get("voice_wychodzace", 0)))
@@ -880,6 +937,16 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
             f"Laczna liczba sesji: {inet.get('laczna_liczba', 0)} | "
             f"Laczny czas: {fmt_czas(inet.get('laczny_czas', 0))} | "
             f"Transfer: {inet.get('laczny_transfer_mb', 0):.2f} MB")
+        if ip_df is not None and not ip_df.empty:
+            doc.add_paragraph("Adresy IP (od najczesciej przyznawanych):")
+            t = doc.add_table(rows=1, cols=2)
+            t.style = "Light Grid Accent 1"
+            t.rows[0].cells[0].text = "Adres IP"
+            t.rows[0].cells[1].text = "Liczba sesji"
+            for _, r in ip_df.iterrows():
+                c = t.add_row().cells
+                c[0].text = str(r["ip"])
+                c[1].text = str(r["liczba_sesji"])
     else:
         doc.add_paragraph("Brak zdarzen transmisji danych.")
 

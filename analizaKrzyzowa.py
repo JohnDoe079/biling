@@ -294,6 +294,7 @@ def komunikacja_bezposrednia(rekordy):
             proba = sub[sub["typ"] == "PRÓBA"]
             sms = sub[sub["typ"].isin(["SMS", "MMS"])]
             dane = sub[sub["typ"] == "DATA"]
+            fwd = sub[sub["typ"] == "FWD"]
             ix, iy = rx.get("identyfikator", ""), ry.get("identyfikator", "")
             wiersze.append({
                 "numer_kontaktu": ny,        # drugi abonent
@@ -306,6 +307,8 @@ def komunikacja_bezposrednia(rekordy):
                 "proby_wych": int((proba["a_key"] == nx).sum()),
                 "sms_przych": int((sms["b_key"] == nx).sum()),
                 "sms_wych": int((sms["a_key"] == nx).sum()),
+                "fwd_przych": int((fwd["b_key"] == nx).sum()),
+                "fwd_wych": int((fwd["a_key"] == nx).sum()),
                 "dane": int(len(dane)),
                 "okres_od": sub["data"].min(),
                 "okres_do": sub["data"].max(),
@@ -315,7 +318,8 @@ def komunikacja_bezposrednia(rekordy):
         return pd.DataFrame()
     kol = ["numer_kontaktu", "nazwa_kontaktu", "abonent", "razem",
            "voice_przych", "voice_wych", "proby_przych", "proby_wych",
-           "sms_przych", "sms_wych", "dane", "okres_od", "okres_do", "ta_sama_osoba"]
+           "sms_przych", "sms_wych", "fwd_przych", "fwd_wych", "dane",
+           "okres_od", "okres_do", "ta_sama_osoba"]
     return pd.DataFrame(wiersze)[kol]
 
 def wspolne_kontakty(rekordy):
@@ -338,6 +342,7 @@ def wspolne_kontakty(rekordy):
         proba = sub[sub["typ"] == "PRÓBA"]
         sms = sub[sub["typ"].isin(["SMS", "MMS"])]
         dane = sub[sub["typ"] == "DATA"]
+        fwd = sub[sub["typ"] == "FWD"]
         return {
             "razem": len(sub),
             "voice_wych": int((voice["a_key"] == numer).sum()),
@@ -346,6 +351,8 @@ def wspolne_kontakty(rekordy):
             "proby_przych": int((proba["b_key"] == numer).sum()),
             "sms_wych": int((sms["a_key"] == numer).sum()),
             "sms_przych": int((sms["b_key"] == numer).sum()),
+            "fwd_przych": int((fwd["b_key"] == numer).sum()),
+            "fwd_wych": int((fwd["a_key"] == numer).sum()),
             "dane": int(len(dane)),
             "okres_od": sub["data"].min(),
             "okres_do": sub["data"].max(),
@@ -388,7 +395,7 @@ def wspolne_kontakty(rekordy):
         return pd.DataFrame()
     kol = ["numer_kontaktu", "nazwa_kontaktu", "abonent", "razem",
            "voice_przych", "voice_wych", "proby_przych", "proby_wych",
-           "sms_przych", "sms_wych", "dane", "okres_od", "okres_do"]
+           "sms_przych", "sms_wych", "fwd_przych", "fwd_wych", "dane", "okres_od", "okres_do"]
     out = pd.DataFrame(wiersze)[kol]
     out = out.sort_values(["numer_kontaktu", "abonent"]).reset_index(drop=True)
     return out
@@ -478,18 +485,18 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
                 L.append("")
                 L.append(f"  #{lp} POLACZENIE BEZPOSREDNIE: {klucz_pary[0]} <-> {klucz_pary[1]}{oso}")
                 L.append("  " + "-" * 126)
-                L.append("  {:<14} {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
+                L.append("  {:<14} {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
                     "Numer", "Drugi numer", "Okres", "Razem", "Vprz", "Vwych", "Pprz", "Pwych",
-                    "Sprz", "Swych", "DATA", ""))
-            L.append("  {:<14} {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
+                    "Sprz", "Swych", "Fprz", "Fwych", "DATA", ""))
+            L.append("  {:<14} {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
                 str(r["abonent"])[:14], str(r["numer_kontaktu"])[:14],
                 f'{r["okres_od"]} - {r["okres_do"]}'[:23],
                 r["razem"], r["voice_przych"], r["voice_wych"],
                 r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                r["dane"], ""))
+                r["fwd_przych"], r["fwd_wych"], r["dane"], ""))
         L.append("")
         L.append("  Legenda: Vprz/Vwych - polaczenia przychodzace/wychodzace, "
-                 "Pprz/Pwych - proby, Sprz/Swych - SMS/MMS, DATA - transmisje danych.")
+                 "Pprz/Pwych - proby, Sprz/Swych - SMS/MMS, Fprz/Fwych - przekierowania (FWD), DATA - transmisje.")
     else:
         L.append("  Brak bezposredniej komunikacji miedzy analizowanymi abonentami.")
     L.append("")
@@ -510,18 +517,18 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
                 L.append("")
                 L.append(f"  #{lp} WSPOLNY KONTAKT: {akt_num}{nazwa} — laczy {n_ab} abonentow")
                 L.append("  " + "-" * 126)
-                L.append("  {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
+                L.append("  {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
                     "Numer abonenta", "Okres", "Zd.z kont.", "Vprz", "Vwych", "Pprz", "Pwych",
-                    "Sprz", "Swych", "DATA", ""))
-            L.append("  {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
+                    "Sprz", "Swych", "Fprz", "Fwych", "DATA", ""))
+            L.append("  {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
                 str(r["abonent"])[:14],
                 f'{r["okres_od"]} - {r["okres_do"]}'[:23],
                 r["razem"], r["voice_przych"], r["voice_wych"],
                 r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                r["dane"], ""))
+                r["fwd_przych"], r["fwd_wych"], r["dane"], ""))
         L.append("")
         L.append("  Legenda: Zd.z kont. = WSZYSTKIE zdarzenia abonenta z TYM kontaktem (nie caly billing);")
-        L.append("  Vprz/Vwych - polaczenia przychodzace/wychodzace, Pprz/Pwych - proby,")
+        L.append("  Vprz/Vwych - polaczenia przychodzace/wychodzace, Pprz/Pwych - proby, Fprz/Fwych - FWD,")
         L.append("  Sprz/Swych - SMS/MMS, DATA - transmisje danych.")
     else:
         L.append("  Brak wspolnych kontaktow osob trzecich.")
@@ -564,26 +571,30 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         w.writerow(["KOMUNIKACJA BEZPOSREDNIA — szczegoly per abonent"])
         w.writerow(["Numer abonenta", "Numer drugiego abonenta",
                     "Razem zdarzen", "Voice przych", "Voice wych",
-                    "Proby przych", "Proby wych", "SMS przych", "SMS wych", "DATA",
+                    "Proby przych", "Proby wych", "SMS przych", "SMS wych",
+                    "FWD przych", "FWD wych", "DATA",
                     "Okres od", "Okres do", "Ta sama osoba/firma"])
         if not bezposrednia.empty:
             for _, r in bezposrednia.iterrows():
                 w.writerow([r["abonent"], r["numer_kontaktu"],
                             r["razem"], r["voice_przych"], r["voice_wych"],
                             r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                            r["dane"], r["okres_od"], r["okres_do"], r.get("ta_sama_osoba", "")])
+                            r["fwd_przych"], r["fwd_wych"], r["dane"],
+                            r["okres_od"], r["okres_do"], r.get("ta_sama_osoba", "")])
         w.writerow([])
         w.writerow(["WSPOLNE KONTAKTY OSOB TRZECICH — szczegoly per abonent"])
         w.writerow(["Numer kontaktu", "Nazwa kontaktu", "Numer abonenta",
                     "Zdarzen z kontaktem", "Voice przych", "Voice wych",
-                    "Proby przych", "Proby wych", "SMS przych", "SMS wych", "DATA",
+                    "Proby przych", "Proby wych", "SMS przych", "SMS wych",
+                    "FWD przych", "FWD wych", "DATA",
                     "Okres od", "Okres do"])
         if not wspolne.empty:
             for _, r in wspolne.iterrows():
                 w.writerow([r["numer_kontaktu"], r["nazwa_kontaktu"], r["abonent"],
                             r["razem"], r["voice_przych"], r["voice_wych"],
                             r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                            r["dane"], r["okres_od"], r["okres_do"]])
+                            r["fwd_przych"], r["fwd_wych"], r["dane"],
+                            r["okres_od"], r["okres_do"]])
         w.writerow([])
         w.writerow(["WSPOLNE IMEI"])
         w.writerow(["IMEI", "Liczba abonentow", "Abonenci"])
@@ -613,6 +624,7 @@ def raport_per_numer(r, outdir):
     bts = ab.bts_polaczone(df, target, bts_map)
     imei_df = ab.imei_dla_numeru(df, target)
     imsi_df = ab.imsi_dla_numeru(df, target)
+    ip_df = ab.ip_dla_numeru(df, target)
     inet = ab.internet_stats(df, target)
 
     from common import dedup_historia
@@ -629,12 +641,13 @@ def raport_per_numer(r, outdir):
     p_csv = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.csv")
     with open(p_txt, "w", encoding="utf-8") as f:
         f.write(ab.generuj_raport_txt(target, kp, ks, bts, imei_df, abonent_info, inet, od, do,
-                                      historia_ab, hk, bloki=None, imsi_df=imsi_df))
+                                      historia_ab, hk, bloki=None, imsi_df=imsi_df,
+                                      ip_df=ip_df))
     ab.generuj_raport_csv(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_csv,
-                          historia_ab, hk, bloki=None, imsi_df=imsi_df)
+                          historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df)
     p_docx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
     ab.generuj_raport_docx(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_docx,
-                           historia_ab, hk, bloki=None, imsi_df=imsi_df)
+                           historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df)
     print(f"    raport: {p_txt}")
 
 
