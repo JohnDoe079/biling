@@ -187,6 +187,11 @@ def _data_min(d):
 def _data_max(d):
     return d if d else "9999-99-99"
 
+def klucz_imei(v) -> str:
+    """IMEI bazowe = 14 cyfr (TAC+SNR). Cyfra 15 = check, 16 = SVN — to samo urzadzenie."""
+    d = normalizuj_numer(v)
+    return d[:14]
+
 def klucz_sort_numer(n):
     """Sortowanie numeryczne napisow-cyfr: najpierw dlugosc, potem wartosc."""
     n = str(n)

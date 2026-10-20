@@ -1,6 +1,43 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
 
+## 2026-10-20 15:10
+### Zmienione
+- UWAGA o "roznych urzadzeniach" w sekcji IMEI: tylko gdy >1 urzadzenie GLOWNE
+  (urzadzenie analizowanego numeru). IMEI kontrahentow (innych osob) nie
+  wyzwalaja uwagi.
+
+## 2026-10-20 15:00
+### Zmienione
+- Raport zbiorczy krzyzowy: XLSX zamiast CSV (jednolicie dla wszystkich operatorow)
+- IMEI kontrahenta: w Uwagach numer telefonu, ktory uzywal urzadzenia (+ nazwa jesli znana),
+  do 3 numerow; format "kontrahent: 502572908 JAN KOWALSKI; 509192705"
+
+## 2026-10-20 14:40
+### Dodane
+- IMEI: normalizacja do 14 cyfr bazowych (TAC+SNR; cyfra 15=check, 16=SVN —
+  to samo urzadzenie liczone razem; struktura wg en.wikipedia.org/wiki/IMEI)
+- IMEI: adnotacja czyjego urzadzenia — "glowne" (strona analizowanego numeru) vs
+  "kontrahent" (IMEI drugiej strony polaczenia, przekazywane przez siec);
+  objasnienie w sekcji 4 (TXT/XLSX/DOCX)
+- analiza krzyzowa: sekcja D (IMEI wspolne dla wielu numerow) tez po kluczu 14-cyfrowym
+### Zmienione
+- Historie (abonent i kontakty): usunieta kolumna "Dane" (pelne/niepelne —
+  redundantna; decyzja o pelnosci widoczna po zawartosci wiersza)
+
+## 2026-10-20 14:30
+### Zmienione
+- Raport per numer: zamiast CSV generowany XLSX (openpyxl) — ta sama zawartosc,
+  pogrubione naglowki sekcji, auto-szerokosc kolumn; wyjscie: <numer>_RAPORT_KONCOWY.xlsx
+### Naprawione
+- XLSX: wciecia w generatorze (cialo funkcji zostalo w definicji _w — pusty arkusz)
+
+## 2026-10-20 14:15
+### Naprawione
+- CSV: domyslny blok raportu nie zawieral imsi/ip (podmiana trafila tylko w TXT) —
+  sekcje IMSI i ADRESY IP brakowaly w CSV; wszystkie 3 formaty karmione
+  tym samym blokiem danych (jedno zrodlo prawdy)
+
 ## 2026-10-20 14:05
 ### Naprawione
 - Tryb reczny (--folder / wybor z listy): ip_dla_numeru wymagal kolumn a_key/b_key

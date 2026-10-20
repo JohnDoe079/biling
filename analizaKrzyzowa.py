@@ -32,6 +32,7 @@ import pandas as pd
 
 from common import (
     skanuj_dane, klucz_numer, normalizuj_numer, fmt_czas, input_path,
+    klucz_imei,
     dane_abonenta, okres_bilingow, BLANK, NIE_IMEI, _clean_counts,
 )
 from operators import orange, tmobile, plus, play
@@ -410,7 +411,7 @@ def wspolne_imei(rekordy):
     for r in rekordy:
         df = r["df"]
         imeis = pd.concat([df["imei_a"], df["imei_b"]])
-        imeis = imeis[~imeis.isin(NIE_IMEI) & imeis.notna()].unique()
+        imeis = imeis[~imeis.isin(NIE_IMEI) & imeis.notna()].map(klucz_imei).unique()
         for imei in imeis:
             per_imei.setdefault(imei, set()).add(f'{r["abonent"]} [{r["numer"]}]')
     wiersze = [
@@ -554,54 +555,78 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
     with open(out_txt, "w", encoding="utf-8") as f:
         f.write("\n".join(L))
 
-    # CSV
-    with open(out_csv, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.writer(f, delimiter=";")
-        w.writerow(["ANALIZA KRZYZOWA BILINGOW"])
-        w.writerow([])
-        w.writerow(["ABONENCI — liczniki zdarzen KRZYZOWYCH"])
-        w.writerow(["Folder", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator", "Okres od", "Okres do",
-                    "Zdarzen z innymi abonentami", "Zdarzen ze wspolnymi kontaktami"])
-        for r in rekordy:
-            num = r["numer"]
-            w.writerow([r["abonent"], num, r.get("identyfikator", ""), r["operator"],
-                        r["okres_od"], r["okres_do"],
-                        dir_cnt.get(num, 0), sha_cnt.get(num, 0)])
-        w.writerow([])
-        w.writerow(["KOMUNIKACJA BEZPOSREDNIA — szczegoly per abonent"])
-        w.writerow(["Numer abonenta", "Numer drugiego abonenta",
-                    "Razem zdarzen", "Voice przych", "Voice wych",
-                    "Proby przych", "Proby wych", "SMS przych", "SMS wych",
-                    "FWD przych", "FWD wych", "DATA",
-                    "Okres od", "Okres do", "Ta sama osoba/firma"])
-        if not bezposrednia.empty:
-            for _, r in bezposrednia.iterrows():
-                w.writerow([r["abonent"], r["numer_kontaktu"],
-                            r["razem"], r["voice_przych"], r["voice_wych"],
-                            r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                            r["fwd_przych"], r["fwd_wych"], r["dane"],
-                            r["okres_od"], r["okres_do"], r.get("ta_sama_osoba", "")])
-        w.writerow([])
-        w.writerow(["WSPOLNE KONTAKTY OSOB TRZECICH — szczegoly per abonent"])
-        w.writerow(["Numer kontaktu", "Nazwa kontaktu", "Numer abonenta",
-                    "Zdarzen z kontaktem", "Voice przych", "Voice wych",
-                    "Proby przych", "Proby wych", "SMS przych", "SMS wych",
-                    "FWD przych", "FWD wych", "DATA",
-                    "Okres od", "Okres do"])
-        if not wspolne.empty:
-            for _, r in wspolne.iterrows():
-                w.writerow([r["numer_kontaktu"], r["nazwa_kontaktu"], r["abonent"],
-                            r["razem"], r["voice_przych"], r["voice_wych"],
-                            r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                            r["fwd_przych"], r["fwd_wych"], r["dane"],
-                            r["okres_od"], r["okres_do"]])
-        w.writerow([])
-        w.writerow(["WSPOLNE IMEI"])
-        w.writerow(["IMEI", "Liczba abonentow", "Abonenci"])
-        if not imei_df.empty:
-            for _, r in imei_df.iterrows():
-                w.writerow([r["imei"], r["liczba_abonentow"], r["abonenci"]])
+    # XLSX (zamiast CSV)
+    from openpyxl import Workbook as _WB
+    from openpyxl.styles import Font as _Font, PatternFill as _Fill
+    _wb = _WB()
+    _ws = _wb.active
+    _ws.title = "Krzyzowy"
+    f = None
+    w = None
 
+    def _wr(row):
+        _ws.append(list(row))
+
+    _wr(["ANALIZA KRZYZOWA BILINGOW"])
+    _wr([])
+    _wr(["ABONENCI — liczniki zdarzen KRZYZOWYCH"])
+    _wr(["Folder", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator", "Okres od", "Okres do",
+                "Zdarzen z innymi abonentami", "Zdarzen ze wspolnymi kontaktami"])
+    for r in rekordy:
+        num = r["numer"]
+        _wr([r["abonent"], num, r.get("identyfikator", ""), r["operator"],
+                    r["okres_od"], r["okres_do"],
+                    dir_cnt.get(num, 0), sha_cnt.get(num, 0)])
+    _wr([])
+    _wr(["KOMUNIKACJA BEZPOSREDNIA — szczegoly per abonent"])
+    _wr(["Numer abonenta", "Numer drugiego abonenta",
+                "Razem zdarzen", "Voice przych", "Voice wych",
+                "Proby przych", "Proby wych", "SMS przych", "SMS wych",
+                "FWD przych", "FWD wych", "DATA",
+                "Okres od", "Okres do", "Ta sama osoba/firma"])
+    if not bezposrednia.empty:
+        for _, r in bezposrednia.iterrows():
+            _wr([r["abonent"], r["numer_kontaktu"],
+                        r["razem"], r["voice_przych"], r["voice_wych"],
+                        r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
+                        r["fwd_przych"], r["fwd_wych"], r["dane"],
+                        r["okres_od"], r["okres_do"], r.get("ta_sama_osoba", "")])
+    _wr([])
+    _wr(["WSPOLNE KONTAKTY OSOB TRZECICH — szczegoly per abonent"])
+    _wr(["Numer kontaktu", "Nazwa kontaktu", "Numer abonenta",
+                "Zdarzen z kontaktem", "Voice przych", "Voice wych",
+                "Proby przych", "Proby wych", "SMS przych", "SMS wych",
+                "FWD przych", "FWD wych", "DATA",
+                "Okres od", "Okres do"])
+    if not wspolne.empty:
+        for _, r in wspolne.iterrows():
+            _wr([r["numer_kontaktu"], r["nazwa_kontaktu"], r["abonent"],
+                        r["razem"], r["voice_przych"], r["voice_wych"],
+                        r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
+                        r["fwd_przych"], r["fwd_wych"], r["dane"],
+                        r["okres_od"], r["okres_do"]])
+    _wr([])
+    _wr(["WSPOLNE IMEI"])
+    _wr(["IMEI", "Liczba abonentow", "Abonenci"])
+    if not imei_df.empty:
+        for _, r in imei_df.iterrows():
+            _wr([r["imei"], r["liczba_abonentow"], r["abonenci"]])
+
+    _bold = _Font(bold=True)
+    _fill = _Fill("solid", fgColor="DDDDDD")
+    _sekcja = ("SEKCJA", "RAPORT", "ABONENCI", "KOMUNIKACJA", "WSPOLNE", "WSPOLNY", "POLACZENIE",
+           "ANALIZA", "#", "IMEI")
+    for _row in _ws.iter_rows():
+        _v = _row[0].value
+        if isinstance(_v, str) and _v.startswith(_sekcja):
+            for _c in _row:
+                _c.font = _bold
+                _c.fill = _fill
+    for _col in _ws.columns:
+        _szer = max((len(str(_c.value)) for _c in _col if _c.value is not None), default=8)
+        _ws.column_dimensions[_col[0].column_letter].width = min(max(_szer + 2, 8), 70)
+    _wb.save(out_csv)
+    _wb.save(out_csv)
 
 # ══════════════════════════════════════════════════════════════════════
 # RAPORTY PER NUMER (klasyczne, z analizaBilling)
@@ -622,7 +647,7 @@ def raport_per_numer(r, outdir):
     kp = ab.kontakty_zdarzenia(df, target, nazwiska_map)
     ks = ab.kontakty_sms(df, target, nazwiska_map)
     bts = ab.bts_polaczone(df, target, bts_map)
-    imei_df = ab.imei_dla_numeru(df, target)
+    imei_df = ab.imei_dla_numeru(df, target, nazwiska_map)
     imsi_df = ab.imsi_dla_numeru(df, target)
     ip_df = ab.ip_dla_numeru(df, target)
     inet = ab.internet_stats(df, target)
@@ -638,12 +663,12 @@ def raport_per_numer(r, outdir):
     target_dir = os.path.join(outdir, target)
     os.makedirs(target_dir, exist_ok=True)
     p_txt = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.txt")
-    p_csv = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.csv")
+    p_xlsx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.xlsx")
     with open(p_txt, "w", encoding="utf-8") as f:
         f.write(ab.generuj_raport_txt(target, kp, ks, bts, imei_df, abonent_info, inet, od, do,
                                       historia_ab, hk, bloki=None, imsi_df=imsi_df,
                                       ip_df=ip_df))
-    ab.generuj_raport_csv(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_csv,
+    ab.generuj_raport_csv(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_xlsx,
                           historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df)
     p_docx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
     ab.generuj_raport_docx(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_docx,
