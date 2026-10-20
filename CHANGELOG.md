@@ -1,6 +1,43 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
 
+## 2026-10-20 08:45
+### Zmienione
+- dedup_historia(): Plus odpowiada z DWOCH BAZ (Polkomtel + Netia) — wpisy
+  bez twardych identyfikatorow o tym samym okresie scalane w jeden, teksty
+  rozniace sie ostatnim slowem laczone naturalnie:
+  "nie obslugiwany przez Polkomtel i Netia" (regula generyczna, bez nazw na sztywno)
+
+## 2026-10-20 08:30
+### Zmienione
+- Sekcje 1+2 raportu per numer SCALONE w jedna tabele kontaktow (TXT+CSV+DOCX):
+  kolumny SMS (wych/przych) NA POCZATKU, potem voice przych/wych, proby, Razem
+  (suma wszystkich typow), czasy polaczen i zakres; kontakty tylko-SMS widoczne;
+  dalsze sekcje przenumerowane (internet=2, BTS=3, IMEI=4, IMSI=5)
+
+## 2026-10-20 08:20
+### Dodane
+- Historia abonenta/kontaktow: kolumny "Dane" (pelne/niepelne — twarde
+  identyfikatory) i "Zrodlo" (plik, z ktorego wpis pochodzi; identyczne wpisy
+  z roznych plikow scalane, zrodla laczone " | ")
+- Sekcja historii abonenta widoczna takze przy pojedynczym wpisie
+
+## 2026-10-19 22:45
+### Dodane
+- dedup_historia(): wpis pusty (bez twardego identyfikatora: PESEL/NIP/adres/SIM)
+  znika, gdy jego okres pokrywa wpis z danymi; niepokryte luki zostaja
+- Tokeny z SAMYMI dane_abonenckie nie sa pomijane — scalaja sie po MSISDN
+  z tokenem wykazu (operator dzieli jeden numer na wiele zapytan)
+- Mapa nazw: wpis z twardszymi identyfikatorami wygrywa — komunikat
+  w polu nazwy nie nadpisuje wpisu z PESEL (dane z pliku 1QR z wieloma numerami)
+### Zmienione
+- datasets() Plus: grupy z samym dane_abonenckie przechodza dalej
+
+## 2026-10-19 22:15
+### Zmienione
+- Wycofany sztywny filtr nazw abonentow (typu "nie obslugiwany") — dane przechodza
+  jak w pliku zrodlowym; obsluga takich przypadkow do uzgodnienia pozniej
+
 ## 2026-10-19 22:10
 ### Zmienione
 - Normalizacja stron przy PARSOWANIU (Plus i Orange): 48123456789 -> 123456789,

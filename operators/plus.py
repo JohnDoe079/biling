@@ -193,7 +193,7 @@ def parse_plus(path: str, verbose: bool = False):
 # DANE ABENENCKIE  ->  mapping nazwisk + historia zmian
 # ─────────────────────────────────────────────────────────────────────
 
-_RE_BRAK_ABONENTA = re.compile(r"nie\s*obs[lł]ugiwany", re.IGNORECASE)
+
 
 def parse_plus_nazwiska(path: str, verbose: bool = False):
     """Zwraca (mapping, historia) jak parser Orange."""
@@ -221,21 +221,29 @@ def parse_plus_nazwiska(path: str, verbose: bool = False):
         num = klucz_numer(msisdn_s.iloc[i])
         if not num:
             continue
+        # nazwa przechodzi jak w pliku ZRODLOWYM — nic nie ustawiamy na sztywno
         nazwa = nazwa_s.iloc[i]
-        if _RE_BRAK_ABONENTA.search(nazwa):
-            nazwa = ""  # numer nieobslugiwany w tym okresie (dowolna siec)
         wpis = {
             "nazwa": nazwa,
             "adres": adres_s.iloc[i],
             "pesel": pesel_s.iloc[i],
             "nip": nip_s.iloc[i],
+            "sim": kol("sim").map(_czysto).iloc[i],
             "data_akt": (wazne_od.iloc[i] or "")[:10],
             "data_dezakt": (wazne_do.iloc[i] or "")[:10],
+            "zrodlo": os.path.basename(path),
         }
         historia.setdefault(num, [])
         if not historia[num] or historia[num][-1] != wpis:
             historia[num].append(wpis)
-        if nazwa or pesel_s.iloc[i] or adres_s.iloc[i]:
+
+        # mapa: wpis z twardszymi identyfikatorami wygrywa (operator bywa
+        # niespojny; komunikat w polu nazwy nie moze nadpisac wpisu z PESEL).
+        def _sila(w):
+            return sum(1 for k in ("pesel", "nip", "adres", "sim") if w.get(k))
+        cur = mapping.get(num)
+        if cur is None or _sila(wpis) > _sila(cur) or (
+                _sila(wpis) == _sila(cur) and not cur.get("nazwa") and nazwa):
             mapping[num] = wpis
 
     if verbose:
@@ -277,7 +285,7 @@ def datasets(folder: str):
     out = []
     for token in sorted(grupy):
         g = grupy[token]
-        if "wykaz_polaczen" not in g and "transmisja_danych" not in g:
+        if "wykaz_polaczen" not in g and "transmisja_danych" not in g and "dane_abonenckie" not in g:
             continue
         out.append({
             "token": token,

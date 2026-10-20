@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Parsery dla operatora Orange Polska."""
+import os
 import re
 
 import pandas as pd
@@ -276,6 +277,7 @@ def parse_orange_nazwiska(path: str, verbose: bool = False) -> tuple:
             "pesel": pesel,
             "data_akt": data_akt,
             "data_dezakt": data_dezakt,
+            "zrodlo": os.path.basename(path),
         }
 
         if numer_norm not in historia:

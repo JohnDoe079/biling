@@ -181,6 +181,122 @@ def _clean_counts(series, wyklucz=BLANK):
     s = series[~series.isin(wyklucz) & series.notna()]
     return s.value_counts()
 
+def _data_min(d):
+    return d if d else "0000-00-00"
+
+def _data_max(d):
+    return d if d else "9999-99-99"
+
+def pelne_dane(w) -> bool:
+    """Czy wpis zawiera twarde identyfikatory (PESEL/NIP/adres/SIM/krs/regon)."""
+    return bool(w.get("pesel") or w.get("nip") or w.get("adres")
+                or w.get("sim") or w.get("krs") or w.get("regon"))
+
+def _polacz_nazwy(a, b):
+    """
+    Polacz dwa teksty informacyjne. Jesli roznia sie tylko ostatnim slowem
+    (np. '...nie obslugiwany przez Polkomtel' + '...przez Netia'),
+    zwroc jeden tekst z oboma slowami: '...przez Polkomtel i Netia'.
+    W przeciwnym razie polacz ' | '.
+    """
+    if not a:
+        return b
+    if not b:
+        return a
+    if a == b:
+        return a
+    # wspolny prefiks konczacy sie spacja
+    i = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        i += 1
+    pref = a[:i].rsplit(" ", 1)
+    if len(pref) == 2 and len(pref[0]) >= 8:
+        wa = a[len(pref[0]) + 1:]
+        wb = b[len(pref[0]) + 1:]
+        if wa and wb and " " not in wa.strip() and " " not in wb.strip():
+            return f"{pref[0]} {wa.strip()} i {wb.strip()}"
+    return f"{a} | {b}"
+
+def dedup_historia(wpisy):
+    """
+    Deduplikacja wpisow historii JEDNEGO numeru (dane z plikow operatora bywaja
+    niespojne: ten sam numer w wielu plikach, raz z danymi, raz z komunikatem).
+    Regula w pelni sterowana danymi (nic na sztywno):
+    - wpis Z DANYMI (nazwa/PESEL/adres) zawsze zostaje,
+    - wpis PUSTY zostaje tylko dla okresu NIEPOKRYTEGO zadnym wpisem z danymi.
+    """
+    if not wpisy:
+        return wpisy
+    # 1) scal IDENTYCZNE wpisy (te same daty/dane, rozne pliki-zrodla):
+    #    zrodla laczymy w jedno pole, wpis zostaje pojedynczy.
+    unik = {}
+    for w in wpisy:
+        k = (w.get("data_akt", ""), w.get("data_dezakt", ""),
+             w.get("nazwa", ""), w.get("pesel", ""), w.get("nip", ""),
+             w.get("adres", ""), w.get("sim", ""))
+        if k in unik:
+            z, nz = unik[k].get("zrodlo", ""), w.get("zrodlo", "")
+            if nz and nz not in z:
+                unik[k]["zrodlo"] = (z + " | " + nz).strip(" |")
+        else:
+            unik[k] = dict(w)
+    wpisy = list(unik.values())
+    if not wpisy:
+        return wpisy
+    # "Wpis z danymi" = ma TWARDY identyfikator (PESEL/NIP/adres/SIM/krs/regon).
+    # Samo pole nazwy NIE wystarcza — operator umieszcza tam czasem komunikaty
+    # typu "numer nie obslugiwany przez <siec>" (kryterium nadal sterowane danymi,
+    # bez sztywnych nazw sieci).
+    def ma_dane(w):
+        return bool(w.get("pesel") or w.get("nip") or w.get("adres")
+                    or w.get("sim") or w.get("krs") or w.get("regon"))
+    twarde = [w for w in wpisy if ma_dane(w)]
+    # wpisy bez twardych identyfikatorow: pogrupuj po okresie — te same daty
+    # z roznymi tekstami (np. odpowiedz z dwoch baz operatora: Polkomtel+Netia)
+    # scal w jeden wpis z polaczonym tekstem
+    puste = [w for w in wpisy if not ma_dane(w)]
+    grupy = {}
+    for w in puste:
+        grupy.setdefault((w.get("data_akt", ""), w.get("data_dezakt", "")), []).append(w)
+    for (od, do), g in grupy.items():
+        if len(g) == 1:
+            continue
+        baza = dict(g[0])
+        zrodla = []
+        for w in g:
+            z = w.get("zrodlo", "")
+            if z and z not in zrodla:
+                zrodla.append(z)
+        baza["nazwa"] = ""
+        for w in g:
+            baza["nazwa"] = _polacz_nazwy(baza["nazwa"], w.get("nazwa", ""))
+        if zrodla:
+            baza["zrodlo"] = " | ".join(zrodla)
+        for w in g:
+            puste.remove(w)
+        puste.append(baza)
+
+    if twarde:
+        pelne = twarde
+    else:
+        # zadnego twardego identyfikatora — fallback: traktuj (scalona) nazwe jako dane
+        pelne = list(puste)
+        puste = []
+    if not pelne:
+        return wpisy
+
+    out = list(pelne)
+    for w in puste:
+        od, do = _data_min(w.get("data_akt", "")), _data_max(w.get("data_dezakt", ""))
+        pokryty = any(
+            not (do < _data_min(p.get("data_akt", "")) or od > _data_max(p.get("data_dezakt", "")))
+            for p in pelne)
+        if not pokryty:
+            out.append(w)
+    return sorted(out, key=lambda w: _data_min(w.get("data_akt", "")))
+
 def fmt_czas(sekundy):
     if pd.isna(sekundy) or sekundy == 0:
         return "0d 0g 00m 00s"

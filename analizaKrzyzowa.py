@@ -106,8 +106,41 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
                     if zestaw.get(rola):
                         print(f"    {rola}: {os.path.basename(zestaw[rola])}")
 
+            # Pliki z SAMYMI danymi abonenckimi (bez wykazu) NIE sa pomijane:
+            # ich mapa zostaje dolaczona do rekordu o tym samym MSISDN
+            # (operator rozbija jeden numer na kilka tokenow).
+            dane_mapa, dane_hist = {}, {}
+            msisdn_dane = None
+            if zestaw.get("nazwiska") and info.get("parse_nazwiska"):
+                try:
+                    dane_mapa, dane_hist = info["parse_nazwiska"](zestaw["nazwiska"], verbose=False)
+                except Exception as e:
+                    print(f"    [!] blad parsowania danych abonenckich: {e}")
+
             if not zestaw.get("wykaz") and not zestaw.get("transmisja"):
-                print(f"[!] {operator}/{etykieta}: brak plikow z danymi — pominięto.")
+                if zestaw.get("nazwiska") and info.get("parse_nazwiska"):
+                    # probujmy wyciagnac numer zapytania z naglowka pliku
+                    try:
+                        _, msisdn_dane = info["parse"](zestaw["nazwiska"], verbose=False)
+                    except Exception:
+                        msisdn_dane = None
+                    if not msisdn_dane and dane_mapa:
+                        msisdn_dane = next(iter(dane_mapa))
+                if not msisdn_dane:
+                    print(f"[!] {operator}/{etykieta}: same dane abonenckie, brak numeru — pominięto.")
+                    continue
+                df = pd.DataFrame(columns=[
+                    "data", "czas", "czas_trwania", "typ", "strona_a", "bts_a", "imei_a",
+                    "imsi_a", "strona_b", "bts_b", "imei_b", "imsi_b"])
+                numer = klucz_numer(msisdn_dane)
+                rekordy.append({
+                    "operator": operator, "abonent": etykieta, "numer": numer,
+                    "identyfikator": (dane_mapa.get(numer, {}) or {}).get("pesel", ""),
+                    "folder": folder, "df": df, "nazwiska_map": dane_mapa,
+                    "historia": dane_hist, "bts_map": {},
+                    "okres_od": "", "okres_do": "",
+                })
+                print(f"    -> [same dane abonenckie] numer: {numer} | wpisow: {len(dane_mapa)}")
                 continue
 
             ramki_df = []
@@ -582,12 +615,13 @@ def raport_per_numer(r, outdir):
     imsi_df = ab.imsi_dla_numeru(df, target)
     inet = ab.internet_stats(df, target)
 
-    historia_ab = {target: historia[target]} if target in historia else None
+    from common import dedup_historia
+    historia_ab = {target: dedup_historia(historia[target])} if target in historia else None
     hk = {}
     for num in pd.concat([kp["numer_kontaktu"], ks["numer_kontaktu"]]).unique():
         n = klucz_numer(num)
         if n in historia and len(historia[n]) > 1:
-            hk[n] = historia[n]
+            hk[n] = dedup_historia(historia[n])
 
     target_dir = os.path.join(outdir, target)
     os.makedirs(target_dir, exist_ok=True)
