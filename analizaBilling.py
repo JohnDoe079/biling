@@ -17,8 +17,8 @@ import pandas as pd
 from common import (
     autodetect_pliki, dane_abonenta, fmt_czas, input_path,
     normalizuj_numer, okres_bilingow, BLANK, NIE_BTS, NIE_IMEI, _clean_counts,
-                    klucz_numer,
-                    klucz_imei, klucz_numer)
+    klucz_numer, klucz_imei, pelny_numer, normalizuj_strone,
+    listing_folderu, preambula_ogledzin, cap_kolumny)
 from operators.orange import (parse_orange, parse_orange_nazwiska, parse_orange_bts,
                               autodetect as orange_autodetect)
 from operators import orange as _orange_mod
@@ -109,6 +109,7 @@ def kontakty_sms(df, target, nazwiska_map=None):
         out["zakres_czasu"] = ""
     out.index.name = "numer_kontaktu"
     out = out.sort_values("sms_razem", ascending=False).reset_index()
+    out["nazwa_kontaktu"] = ""
     if nazwiska_map:
         out["nazwa_kontaktu"] = out["numer_kontaktu"].astype(str).map(
             lambda x: nazwiska_map.get(normalizuj_numer(x), {}).get("nazwa", "")
@@ -170,7 +171,7 @@ def imei_dla_numeru(df, target, nazwiska_map=None):
                 nazwa = ""
                 if nazwiska_map:
                     nazwa = (nazwiska_map.get(num, {}) or {}).get("nazwa", "")
-                opisy.append(f"{num} {nazwa}".strip())
+                opisy.append(f"{pelny_numer(num)} {nazwa}".strip())
             abonent[im] = "; ".join(opisy) if opisy else "(kontrahent)"
     out = pd.DataFrame([(im, n, abonent[im]) for im, n in licz.items()],
                        columns=["imei", "liczba_zdarzen", "abonent"])
@@ -284,35 +285,68 @@ def _z(a, b):
     b1, b2 = b.split(" - ")
     return f"{min(a1, b1)} - {max(a2, b2)}"
 
-def polacz_kontakty(kp, ks):
-    """Sekcje 1+2: kontakty glosowe + proby + SMS/MMS w jednej tabeli."""
+def polacz_kontakty(kp, ks, nazwiska_map=None):
+    """Sekcje 1+2: kontakty glosowe + proby + SMS/MMS w jednej tabeli.
+    Klucz TEKSTOWY w obu ramkach; nazwa z SMS lub mapy (suffix _s gdy w obu)."""
     k = kp.copy()
     s = ks.copy() if ks is not None else None
     if s is None or s.empty:
-        for c in ("sms_wychodzace", "sms_przychodzace", "sms_razem"):
-            k[c] = 0
+        for c in ("sms_wychodzace", "sms_przychodzace", "sms_razem", "nazwa_kontaktu"):
+            k[c] = k.get(c, "")
+            if c != "nazwa_kontaktu":
+                k[c] = 0
         return k
     for c in ("sms_wychodzace", "sms_przychodzace", "sms_razem"):
         if c not in s.columns:
             s[c] = 0
     if "nazwa_kontaktu" not in s.columns:
         s["nazwa_kontaktu"] = ""
-    s = s[["numer_kontaktu", "nazwa_kontaktu", "sms_wychodzace", "sms_przychodzace", "sms_razem", "zakres_czasu"]]
     for c in ("nazwa_kontaktu", "zakres_czasu"):
         if c not in k.columns:
             k[c] = ""
+    # klucz tekstowy w obu (inaczej outer join gubi numer)
+    k["numer_kontaktu"] = k["numer_kontaktu"].astype(str)
+    s["numer_kontaktu"] = s["numer_kontaktu"].astype(str)
     m = k.merge(s, on="numer_kontaktu", how="outer", suffixes=("", "_s"))
+    m = m[(m["numer_kontaktu"] != "nan") & (m["numer_kontaktu"] != "")]
     for c in ("voice_wychodzace", "voice_przychodzace", "proba_razem", "razem",
               "czas_wychodzacy_s", "czas_przychodzacy_s",
               "sms_wychodzace", "sms_przychodzace", "sms_razem"):
         if c in m.columns:
-            m[c] = m[c].fillna(0).astype(int)  # liczby calkowite (nie 487.0)
-    m["nazwa_kontaktu"] = m["nazwa_kontaktu"].fillna(m.get("nazwa_kontaktu_s", ""))
-    m["zakres_czasu"] = [_z(a, b) for a, b in zip(m["zakres_czasu"], m.get("zakres_czasu_s", ""))]
+            m[c] = m[c].fillna(0).astype(int)
+    # nazwa: z glosowej (suffix ""), uzupelnij z SMS (_s) gdy pusta; potem z mapy
+    gl = m.get("nazwa_kontaktu", "")
+    if isinstance(gl, pd.Series):
+        gl = gl.fillna("").astype(str)
+        gl = gl.where(~gl.str.lower().isin(["nan", "none"]), "")
+        m["nazwa_kontaktu"] = gl
+    else:
+        m["nazwa_kontaktu"] = ""
+    sms_n = m.get("nazwa_kontaktu_s")
+    if sms_n is not None:
+        sms_n = sms_n.fillna("").astype(str)
+        sms_n = sms_n.where(~sms_n.str.lower().isin(["nan", "none"]), "")
+        braki = m["nazwa_kontaktu"].eq("")
+        m.loc[braki, "nazwa_kontaktu"] = sms_n[braki]
+    if nazwiska_map:
+        from common import klucz_numer as _kn
+        def _szukaj(x):
+            for k in (_kn(x), str(x)):
+                if k in nazwiska_map:
+                    return (nazwiska_map.get(k, {}) or {}).get("nazwa", "")
+            return ""
+        braki = m["nazwa_kontaktu"].eq("")
+        m.loc[braki, "nazwa_kontaktu"] = m.loc[braki, "numer_kontaktu"].map(_szukaj)
+    from common import czytelna_nazwa
+    m["nazwa_kontaktu"] = m["nazwa_kontaktu"].map(czytelna_nazwa)
+    z_sms = m.get("zakres_czasu_s")
+    if z_sms is not None:
+        m["zakres_czasu"] = [_z(a, b) for a, b in zip(m["zakres_czasu"], z_sms)]
     m["zakres_czasu"] = m["zakres_czasu"].fillna("")
-    m["razem"] = m["razem"] + m["sms_razem"]
+    m["razem"] = m["razem"].astype(int) + m["sms_razem"].astype(int)
     m = m.drop(columns=[c for c in ("nazwa_kontaktu_s", "zakres_czasu_s") if c in m.columns])
     return m.sort_values("razem", ascending=False).reset_index(drop=True)
+
 
 def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do,
                          historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None, ip_df=None):
@@ -374,7 +408,7 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             lines.append("")
 
         # SEKCJA 1 (polaczona: glosowe + proby + SMS/MMS)
-        kp_b = polacz_kontakty(blok['kp'], blok.get('ks'))
+        kp_b = polacz_kontakty(blok['kp'], blok.get('ks'), None)
         lines.append("-" * 140)
         lines.append("  SEKCJA 1: POLACZENIA (glosowe + proby + SMS/MMS; bez FWD, DATA)")
         lines.append("-" * 140)
@@ -525,7 +559,8 @@ def generuj_raport_txt(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
 
 
 def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, outpath,
-                       historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None, ip_df=None):
+                       historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None, ip_df=None,
+                       folder=None, operator_nazwa=""):
     if bloki is None:
         bloki = [{
             'naglowek': None,
@@ -542,6 +577,11 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
         wb = Workbook()
         ws = wb.active
         ws.title = "Raport"
+        if folder:
+            for linia in preambula_ogledzin(operator_nazwa, f"numeru {target}", okres_od, okres_do,
+                                            folder, listing_folderu(folder)):
+                ws.append([linia])
+            ws.append([""])
         writer = None
         f = None
     else:
@@ -591,16 +631,19 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
             _w([])
 
         # SEKCJA 1 (polaczona: glosowe + proby + SMS/MMS)
-        kp_b = polacz_kontakty(blok['kp'], blok.get('ks'))
-        _w(["SEKCJA 1: POLACZENIA (glosowe + proby + SMS/MMS; bez FWD, DATA)"])
-        _w(["Lp", "Numer telefonu", "Imię i nazwisko / Firma",
-                         "SMS wychodzace", "SMS przychodzace",
-                         "Polaczenie wychodzace", "Polaczenie przychodzace", "Proba polaczenia",
+        kp_b = polacz_kontakty(blok['kp'], blok.get('ks'), None)
+        _w(["SEKCJA 1: POLACZENIA (W - wychodzace, P - przychodzace, PR - proby)"])
+        if xlsx:
+            _w(["", "", "", "SMS", "", "Polaczenia", "", "", "Razem", "", "", ""])
+            _wrzad = ws.max_row
+        _w(["Lp", "Numer", "Abonent",
+                         "W", "P",
+                         "W", "P", "PR",
                          "Razem", "Czas wychodzacy", "Czas przychodzacy", "Zakres czasu"])
         if not kp_b.empty:
             for i, (_, r) in enumerate(kp_b.iterrows(), 1):
                 _w([
-                    i, r['numer_kontaktu'], (r.get('nazwa_kontaktu', '') or 'brak danych'),
+                    i, pelny_numer(r['numer_kontaktu']), r.get('nazwa_kontaktu', ''),
                     r['sms_wychodzace'], r['sms_przychodzace'],
                     r['voice_wychodzace'], r['voice_przychodzace'], r.get('proba_razem', 0),
                     r['razem'],
@@ -609,6 +652,12 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
                 ])
         else:
             _w(["Brak zdarzen w tym okresie."])
+        if xlsx:
+            ws.merge_cells(start_row=_wrzad, start_column=4, end_row=_wrzad, end_column=5)   # SMS
+            ws.merge_cells(start_row=_wrzad, start_column=6, end_row=_wrzad, end_column=8)   # Polaczenia
+            from openpyxl.styles import Font as _F
+            for _c in ws[_wrzad]:
+                _c.font = _F(bold=True)
         _w([])
 
         # SEKCJA 3
@@ -629,7 +678,7 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
         # SEKCJA 4
         bts_b = blok['bts']
         _w(["SEKCJA 3: STACJE BTS"])
-        _w(["Lp", "Kod BTS", "Inicjujące", "Odbierające", "Adres stacji"])
+        _w(["Lp", "Kod BTS", "Adres", "Wychodzace", "Przychodzace"])
         if not bts_b.empty:
             for i, (_, r) in enumerate(bts_b.iterrows(), 1):
                 kod = str(r['bts'])
@@ -637,7 +686,7 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
                 if not adres and ' ' in kod:  # Plus: brak kodu, adres = identyfikator
                     adres = kod
                 _w([i, kod if ' ' not in kod else '(brak kodu)',
-                                 r['inicjujace'], r['odbierajace'], adres or '(brak danych)'])
+                                 adres or '(brak danych)', r['inicjujace'], r['odbierajace']])
         else:
             _w(["Brak zdarzen w tym okresie."])
         _w([])
@@ -694,7 +743,12 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
     _w(["KONIEC RAPORTU"])
 
     if xlsx:
-        bold = Font(bold=True)
+        from openpyxl.styles import Font as _CalF
+        from common import cap_kolumny as _ck
+        for _row in ws.iter_rows():
+            for _c in _row:
+                _c.font = _CalF(name='Calibri', size=10, bold=_c.font.bold)
+        bold = Font(name='Calibri', size=10, bold=True)
         fill = PatternFill("solid", fgColor="DDDDDD")
         sekcja = ("SEKCJA", "RAPORT", "HISTORIA", "DANE", "ANALIZA")
         for row in ws.iter_rows():
@@ -703,9 +757,25 @@ def generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, ok
                 for c in row:
                     c.font = bold
                     c.fill = fill
+        # inteligentne szerokosci: pomiar zawartosci + cap per kategoria naglowka
+        _hdr = {}
+        for _col in ws.columns:
+            _lit = _col[0].column_letter
+            _h = next((str(c.value) for c in _col[:6]
+                       if c.value is not None and str(c.value).strip() and
+                       not str(c.value).startswith(("SEKCJA", "="))), "")
+            _hdr[_lit] = _ck(_h)
         for col in ws.columns:
+            lit = col[0].column_letter
             szer = max((len(str(c.value)) for c in col if c.value is not None), default=8)
-            ws.column_dimensions[col[0].column_letter].width = min(max(szer + 2, 8), 60)
+            ws.column_dimensions[lit].width = min(max(szer + 2, 6), _hdr.get(lit, 30))
+        from openpyxl.styles import PatternFill as _PF
+        _szary = _PF("solid", fgColor="F2F2F2")
+        for _n, _row in enumerate(ws.iter_rows(), 1):
+            if _n % 2 == 0:
+                for _c in _row:
+                    if _c.fill.fgColor.rgb in (None, "00000000"):
+                        _c.fill = _szary
         wb.save(outpath)
     else:
         f.close()
@@ -788,7 +858,8 @@ def pliki_z_folderu(operator_key: str, folder: str):
     return df, msisdn, nazwiska_map, historia, bts_map
 
 def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None,
-            df_pre=None, nazwiska_map_pre=None, historia_pre=None, bts_map_pre=None, msisdn_pre=None):
+            df_pre=None, nazwiska_map_pre=None, historia_pre=None, bts_map_pre=None, msisdn_pre=None,
+            folder=None):
     historia_kontaktow = {}
     info = OPERATORZY[operator_key]
     if df_pre is not None:
@@ -932,6 +1003,7 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
 
     # TXT wycofany — raporty DOCX + XLSX
 
+    _op_nazwa = OPERATORZY.get(operator_key, {}).get("nazwa", operator_key)
     raport_xlsx_path = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.xlsx")
     generuj_raport_csv(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, raport_xlsx_path,
                        historia_abonentow, historia_kontaktow, bloki=bloki, imsi_df=imsi_df,
@@ -940,7 +1012,8 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
     raport_docx_path = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
     ok_docx = generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do,
                                   raport_docx_path, historia_abonentow, historia_kontaktow,
-                                  bloki=bloki, imsi_df=imsi_df, ip_df=ip_df)
+                                  bloki=bloki, imsi_df=imsi_df, ip_df=ip_df,
+                                  operator_nazwa=_op_nazwa)
 
     print(f"\n[+] RAPORT KONCOWY DOCX: {os.path.abspath(raport_docx_path)}")
     print(f"[+] RAPORT KONCOWY XLSX: {os.path.abspath(raport_xlsx_path)}")
@@ -949,8 +1022,123 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
 
 
 
+
+def _ustaw_szerokosci(t, n_naglowkow=1, szer_strony_cm=16.0):
+    """Inteligentne szerokosci kolumn DOCX: pomiar zawartosci z capami per
+    kategoria, normalizacja do szerokosci strony, layout FIXED (Word
+    respektuje zadane szerokosci; bez recznych korekt)."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from docx.shared import Cm
+    from common import cap_kolumny
+    if not t.rows:
+        return
+    n_col = len(t.rows[0].cells)
+    if n_col == 0:
+        return
+    mx = [0] * n_col
+    for row in t.rows:
+        for j, c in enumerate(row.cells):
+            if j < n_col:
+                L = len(c.text.strip())
+                if L > mx[j]:
+                    mx[j] = L
+    hdr = t.rows[min(n_naglowkow, len(t.rows)) - 1]
+    CHAR_CM = 0.22  # srednia szerokosc znaku Calibri 10
+    szer = []
+    for j in range(n_col):
+        cap = cap_kolumny(hdr.cells[j].text) if j < len(hdr.cells) else 30
+        _h = hdr.cells[j].text.strip().lower() if j < len(hdr.cells) else ""
+        podloga = 6 if _h == "razem" else (5 if cap >= 5 else cap)
+        szer.append(min(max(mx[j] + 1, podloga), cap))
+    # kolumny waskie (cap<=15): STALA szerokosc we wszystkich tabelach;
+    # elastyczne dziela pozostala przestrzen proporcjonalnie
+    stale_cm = sum(w * CHAR_CM for w in szer if w <= 15)
+    flex_idx = [j for j, w in enumerate(szer) if w > 15]
+    flex_sum = sum(szer[j] for j in flex_idx) or 1
+    szer_cm = [w * CHAR_CM if w <= 15 else 0 for w in szer]
+    if flex_idx:
+        pozostalo = max(szer_strony_cm - stale_cm, 2.0)
+        for j in flex_idx:
+            szer_cm[j] = pozostalo * szer[j] / flex_sum
+    else:
+        # brak kolumn elastycznych — przeskaluj do pelnej szerokosci strony
+        skala = szer_strony_cm / max(sum(szer_cm), 0.1)
+        szer_cm = [w * skala for w in szer_cm]
+    total = sum(szer) or 1
+    tblPr = t._tbl.tblPr
+    layout = tblPr.find(qn('w:tblLayout'))
+    if layout is None:
+        layout = OxmlElement('w:tblLayout')
+        tblPr.append(layout)
+    layout.set(qn('w:type'), 'fixed')
+    pelna_tw = int(szer_strony_cm * 567)  # twips
+    total = sum(szer_cm) or 1
+    # nadpisz tblGrid — Word bierze szerokosci z siatki, nie z tcW
+    grid = t._tbl.find(qn('w:tblGrid'))
+    if grid is not None:
+        for j, gc in enumerate(grid.findall(qn('w:gridCol'))):
+            if j < n_col:
+                gc.set(qn('w:w'), str(int(szer_cm[j] * 567)))
+    # tblW = 100% szerokosci strony, layout juz fixed
+    tblW = tblPr.find(qn('w:tblW'))
+    if tblW is None:
+        tblW = OxmlElement('w:tblW')
+        tblPr.append(tblW)
+    tblW.set(qn('w:type'), 'dxa')
+    tblW.set(qn('w:w'), str(pelna_tw))
+    zrobione = set()
+    for row in t.rows:
+        for j, c in enumerate(row.cells):
+            if j >= n_col or j in zrobione:
+                continue
+            c.width = Cm(szer_cm[j])
+            zrobione.add(j)
+
+
+def _styl_tabeli(t, n_naglowkow=1):
+    """Minimalny styl tabeli: siatka, pogrubione naglowki (n_naglowkow wierszy)
+    z wypelnieniem D9D9D9, szare pasy co drugi wiersz danych."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as _WAP
+    _TXT = ("numer", "numer telefonu", "numer kontaktu", "numer abonenta",
+            "numer (msisdn)", "numer drugiego abonenta", "abonent", "nazwa",
+            "adres", "plik")
+    _hdr_r = t.rows[min(n_naglowkow, len(t.rows)) - 1] if t.rows else None
+    _centruj = set()
+    if _hdr_r is not None:
+        for _j, _c in enumerate(_hdr_r.cells):
+            if cap_kolumny(_c.text) <= 15 and _c.text.strip().lower() not in _TXT:
+                _centruj.add(_j)
+    for ri, row in enumerate(t.rows):
+        for j, c in enumerate(row.cells):
+            _ctr = j in _centruj or (ri == 0 and cap_kolumny(c.text) <= 15)
+            for p in c.paragraphs:
+                p.paragraph_format.space_after = Pt(0)
+                p.paragraph_format.space_before = Pt(0)
+                p.alignment = _WAP.CENTER if _ctr else _WAP.LEFT
+                for r in p.runs:
+                    r.font.size = Pt(10)
+                    if ri < n_naglowkow:
+                        r.font.bold = True
+            if ri < n_naglowkow:
+                shd = OxmlElement('w:shd')
+                shd.set(qn('w:val'), 'clear')
+                shd.set(qn('w:fill'), 'D9D9D9')
+                c._tc.get_or_add_tcPr().append(shd)
+            elif (ri - n_naglowkow) % 2 == 1:
+                shd = OxmlElement('w:shd')
+                shd.set(qn('w:val'), 'clear')
+                shd.set(qn('w:fill'), 'F2F2F2')
+                c._tc.get_or_add_tcPr().append(shd)
+    _ustaw_szerokosci(t, n_naglowkow)
+
+
 def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, okres_do, outpath,
-                        historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None, ip_df=None):
+                        historia_abonentow=None, historia_kontaktow=None, bloki=None, imsi_df=None, ip_df=None,
+                        folder=None, operator_nazwa=""):
     """Raport DOCX — wymaga python-docx. Zwraca True jesli wygenerowano."""
     try:
         from docx import Document
@@ -960,13 +1148,58 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
         return False
 
     doc = Document()
-    doc.add_heading(f"RAPORT KONCOWY — ANALIZA BILINGOW", 0)
-    doc.add_paragraph(f"Numer: {target} | Operator danych: {abonent.get('operator', '')}")
-    doc.add_paragraph(f"Nazwa: {abonent.get('nazwa', '') or '(brak danych)'} | "
-                      f"PESEL/REGON: {abonent.get('pesel', '') or '-'}")
+    from docx.shared import Pt as _Pt
+    _st = doc.styles['Normal']
+    _st.font.name = 'Calibri'
+    _st.font.size = _Pt(10)
+    for _hs in ('Heading 1', 'Heading 2', 'Title'):
+        try:
+            _h = doc.styles[_hs]
+            _h.font.name = 'Calibri'
+            _h.font.bold = True
+        except KeyError:
+            pass
+    if folder:
+        # Oględziny — spojna czesc dokumentu: naglowek + opis + tabela z SHA-256
+        pliki = listing_folderu(folder)
+        doc.add_heading("OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH", 1)
+        doc.add_paragraph(
+            f"Oględzinom poddano dane telekomunikacyjne dostarczone przez operatora "
+            f"{operator_nazwa} dla numeru {target} za okres od {okres_od} do {okres_do}. "
+            f"Dane umieszczono w folderze abonenta '{os.path.basename(folder)}'.")
+        doc.add_paragraph("Pliki zrodlowe (listing z sumami kontrolnymi SHA-256):")
+        tp = doc.add_table(rows=1, cols=3)
+        tp.style = "Light Grid Accent 1"
+        for i, h in enumerate(["Lp", "Plik", "SHA-256"]):
+            tp.rows[0].cells[i].text = h
+        if pliki:
+            for lp, (nazwa, sha) in enumerate(pliki, 1):
+                c = tp.add_row().cells
+                c[0].text = str(lp)
+                c[1].text = nazwa
+                c[2].text = sha
+        else:
+            c = tp.add_row().cells
+            c[0].text = "-"
+            c[1].text = "(brak rozpoznawalnych plikow zrodlowych w folderze abonenta)"
+            c[2].text = ""
+        doc.add_page_break()
+    from docx.shared import Pt as _Pt2
+    _h = doc.add_heading(f"RAPORT KONCOWY — ANALIZA BILINGOW", 0)
+    for _r in _h.runs:
+        _r.font.size = _Pt2(16)
+    # naglowek danych — ciasne odstepy, kazdy wiersz pojedynczo
+    doc.add_paragraph(f"Okres analizy: {okres_od} - {okres_do}")
+    doc.add_paragraph(f"Numer: {target} | Operator: {operator_nazwa or abonent.get('operator', '') or 'nieustalony'}")
+    doc.add_paragraph(f"Nazwa: {abonent.get('nazwa', '') or 'nieustalony'} | "
+                      f"PESEL/REGON: {abonent.get('pesel', '') or 'nieustalony'}")
     if abonent.get("adres"):
         doc.add_paragraph(f"Adres: {abonent['adres']}")
-    doc.add_paragraph(f"Okres analizy: {okres_od} - {okres_do}")
+    # zmniejsz odstepy w akapitach naglowka (6 akapitow od konca)
+    from docx.shared import Pt as _Pt3
+    for _p in doc.paragraphs[-5:]:
+        _p.paragraph_format.space_after = _Pt3(2)
+        _p.paragraph_format.space_before = _Pt3(0)
     if historia_abonentow:
         doc.add_heading("HISTORIA ZMIAN ABONENTA", 1)
         for numer, wpisy in historia_abonentow.items():
@@ -976,18 +1209,24 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
                     f"{w.get('data_akt', '')} - {w.get('data_dezakt', '') or 'obecnie'}: "
                     f"{w.get('nazwa', '')} | PESEL: {w.get('pesel', '') or '-'}", style="List Bullet 2")
 
-    doc.add_heading("SEKCJA 1: POLACZENIA (glosowe + proby + SMS/MMS; bez FWD, DATA)", 1)
-    km = polacz_kontakty(kp, ks)
+    doc.add_heading("SEKCJA 1: POLACZENIA (W - wychodzace, P - przychodzace, PR - proby)", 1)
+    km = polacz_kontakty(kp, ks, None)
     if km is not None and not km.empty:
-        t = doc.add_table(rows=1, cols=9)
-        t.style = "Light Grid Accent 1"
-        for i, h in enumerate(["Lp", "Numer kontaktu", "Nazwa", "SMS wych", "SMS przych",
-                               "V wych", "V przych", "Proby", "Razem"]):
-            t.rows[0].cells[i].text = h
+        # naglowek dwupoziomowy ze scaleniem: [Lp|Abonent|Nazwa] + SMS(W|P) + Polaczenia(W|P|PR) + Razem
+        t = doc.add_table(rows=2, cols=9)
+        t.style = "Table Grid"
+        g1 = t.rows[0].cells
+        g1[1].merge(g1[2]).text = "Dane kontaktu"  # Numer+Abonent
+        g1[3].merge(g1[4]).text = "SMS"           # SMS: W|P
+        g1[5].merge(g1[6]).merge(g1[7]).text = "Polaczenia"  # W|P|PR
+        # g1[8] = Razem (bez scalania)
+        h2 = t.rows[1].cells
+        for i, h in enumerate(["Lp", "Numer", "Abonent", "W", "P", "W", "P", "PR", "Razem"]):
+            h2[i].text = h
         for lp, (_, r) in enumerate(km.iterrows(), 1):
             c = t.add_row().cells
             c[0].text = str(lp)
-            c[1].text = str(r.get("numer_kontaktu", ""))
+            c[1].text = pelny_numer(r.get("numer_kontaktu", ""))
             c[2].text = str(r.get("nazwa_kontaktu", "") or "brak danych")
             c[3].text = str(int(r.get("sms_wychodzace", 0)))
             c[4].text = str(int(r.get("sms_przychodzace", 0)))
@@ -1001,45 +1240,51 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
     doc.add_heading("SEKCJA 2: TRANSMISJA DANYCH (INTERNET)", 1)
     if inet:
         doc.add_paragraph(
-            f"Laczna liczba sesji: {inet.get('laczna_liczba', 0)} | "
-            f"Laczny czas: {fmt_czas(inet.get('laczny_czas', 0))} | "
-            f"Transfer: {inet.get('laczny_transfer_mb', 0):.2f} MB")
+            f"Laczna liczba sesji: {inet.get('razem', 0)} | "
+            f"Laczny czas: {fmt_czas(inet.get('czas_s', 0))}")
         if ip_df is not None and not ip_df.empty:
             doc.add_paragraph("Adresy IP (od najczesciej przyznawanych):")
-            t = doc.add_table(rows=1, cols=4)
-            t.style = "Light Grid Accent 1"
-            t.rows[0].cells[0].text = "Adres IP"
-            t.rows[0].cells[1].text = "Liczba sesji"
-            t.rows[0].cells[2].text = "Od"
-            t.rows[0].cells[3].text = "Do"
-            for _, r in ip_df.iterrows():
+            t = doc.add_table(rows=1, cols=5)
+            t.style = "Table Grid"
+            t.rows[0].cells[0].text = "Lp"
+            t.rows[0].cells[1].text = "Adres IP"
+            t.rows[0].cells[2].text = "Liczba sesji"
+            t.rows[0].cells[3].text = "Od"
+            t.rows[0].cells[4].text = "Do"
+            for _lp, (_, r) in enumerate(ip_df.iterrows(), 1):
                 c = t.add_row().cells
-                c[0].text = str(r["ip"])
-                c[1].text = str(r["liczba_sesji"])
-                c[2].text = str(r.get("okres_od", ""))
-                c[3].text = str(r.get("okres_do", ""))
+                c[0].text = str(_lp)
+                c[1].text = str(r["ip"])
+                c[2].text = str(r["liczba_sesji"])
+                c[3].text = str(r.get("okres_od", ""))
+                c[4].text = str(r.get("okres_do", ""))
     else:
         doc.add_paragraph("Brak zdarzen transmisji danych.")
 
     doc.add_heading("SEKCJA 3: STACJE BAZOWE (BTS)", 1)
     if bts is not None and not bts.empty:
-        t = doc.add_table(rows=1, cols=4)
-        t.style = "Light Grid Accent 1"
-        for i, h in enumerate(["Lp", "Kod BTS", "Adres", "Liczba polaczen"]):
+        t = doc.add_table(rows=1, cols=5)
+        t.style = "Table Grid"
+        for i, h in enumerate(["Lp", "Kod BTS", "Adres", "Wychodzace", "Przychodzace"]):
             t.rows[0].cells[i].text = h
         for lp, (_, r) in enumerate(bts.iterrows(), 1):
             c = t.add_row().cells
+            kod = str(r.get("bts", ""))
+            adres = str(r.get("adres", ""))
+            if not adres and ' ' in kod:
+                adres = kod
             c[0].text = str(lp)
-            c[1].text = str(r.get("bts", ""))
-            c[2].text = str(r.get("adres", ""))
-            c[3].text = str(r.get("liczba_polaczen", ""))
+            c[1].text = kod if ' ' not in kod else "(brak kodu)"
+            c[2].text = adres or "(brak danych)"
+            c[3].text = str(r.get("inicjujace", ""))
+            c[4].text = str(r.get("odbierajace", ""))
     else:
         doc.add_paragraph("Brak danych BTS.")
 
     doc.add_heading("SEKCJA 4: URZADZENIA (IMEI)", 1)
     if imei_df is not None and not imei_df.empty:
         t = doc.add_table(rows=1, cols=4)
-        t.style = "Light Grid Accent 1"
+        t.style = "Table Grid"
         for i, h in enumerate(["Lp", "IMEI (baza 14 cyfr)", "Liczba zdarzen", "Abonent"]):
             t.rows[0].cells[i].text = h
         for lp, (_, r) in enumerate(imei_df.iterrows(), 1):
@@ -1054,7 +1299,7 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
     doc.add_heading("SEKCJA 5: KARTY SIM (IMSI)", 1)
     if imsi_df is not None and not imsi_df.empty:
         t = doc.add_table(rows=1, cols=3)
-        t.style = "Light Grid Accent 1"
+        t.style = "Table Grid"
         for i, h in enumerate(["Lp", "IMSI", "Liczba zdarzen"]):
             t.rows[0].cells[i].text = h
         for lp, (_, r) in enumerate(imsi_df.iterrows(), 1):
@@ -1067,6 +1312,10 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
     else:
         doc.add_paragraph("Brak danych IMSI.")
 
+    for _t in doc.tables:
+        _n = 2 if (len(_t.rows) > 1 and
+                   _t.rows[1].cells[0].text.strip().lower() == "lp") else 1
+        _styl_tabeli(_t, n_naglowkow=_n)
     doc.save(outpath)
     return True
 
@@ -1100,7 +1349,7 @@ def main():
             sys.exit(1)
         uruchom(operator_key, None, args.numer, args.outdir,
                 df_pre=df_f, nazwiska_map_pre=naz_f or {}, historia_pre=hist_f or {},
-                bts_map_pre=bts_f or {}, msisdn_pre=ms_f)
+                bts_map_pre=bts_f or {}, msisdn_pre=ms_f, folder=args.folder)
         return
 
     # Tryb 2: autodetekcja ./input

@@ -1,5 +1,167 @@
 # CHANGELOG — Biling Toolkit
-Format wersji: RRRR-MM-DD GG:MM (data godzina:minuty)
+Format wersji: RRRR-MM-DD GG:MM (czas polski)
+
+## 2026-10-21 22:05
+### Zmienione (DOCX)
+- Sekcja 1: Numer wyrównany do LEWEJ (wykluczony z centrowania);
+  SMS i Polaczenia (W/P/PR) cap 5 — jednakowa szerokosc, 3 znaki;
+  Razem podloga 6 znakow (naglowek sie nie zawija)
+- Sekcja 3: Kod BTS cap 13, Wychodzace/Przychodzace cap 11 (mniejsze)
+
+## 2026-10-21 22:00
+### Zmienione (DOCX)
+- Szerokosci: algorytm STALA/FLEX — kolumny waskie (cap<=15, min 5 znakow)
+  maja stala szerokosc we wszystkich tabelach (Lp ~1.1 cm w kazdej
+  sekcji, identycznie); kolumny elastyczne (tekst) dziela pozostala
+  przestrzen; gdy brak elastycznych — przeskalowanie do 100% strony
+- Jawne wyrównanie do lewej dla kolumn tekstowych (Abonent nie jest
+  juz centrowany); centrowane liczby/daty naglowki i dane
+- Sekcja 3 (DOCX i XLSX): kolumny Lp/Kod BTS/Adres/Wychodzace/
+  Przychodzace (jednolite w obu formatach)
+
+## 2026-10-21 21:45
+### Zmienione (DOCX)
+- Lp wszedzie szerokosc cap 4 znaki (waskie, jak w sekcji 3)
+- Sekcja 2 INTERNET: dodana kolumna Lp (Lp/Adres IP/Liczba sesji/Od/Do);
+  naprawione statystyki (sesje, czas — wczesniej zera)
+- Sekcja 3 BTS: dodane kolumny Inicjujace/Odbierajace (jednolicie z XLSX)
+- Numer cap 15 (koniec zawijania cyfr), W/P/PR cap 6 (3 znaki sie mieszcza)
+- Centrowanie danych i naglowkow w kolumnach liczbowych/datowych (cap<=15);
+  tekst (Numer/Abonent/Adres) bez zmian — do lewej
+- Wykrywanie naglowkow dwupoziomowych po tresci ("Lp" w wierszu 2),
+  nie po indeksie tabeli (dzialalo zle przy pustej sekcji 1)
+### Uwaga
+- XLSX: szerokosci bez zmian (jak ustalono — za duzo scalan w plaskim arkuszu);
+  funkcjonalnosc identyczna w obu formatach
+
+## 2026-10-21 21:25
+### Dodane
+- Inteligentne szerokosci kolumn (DOCX i XLSX): pomiar zawartosci
+  z capami per kategoria (common.CAPY_KOLUMN) — Lp/liczniki waskie
+  (~1 cm), daty 11, numery 13, nazwy/adresy 35-40 z zawijaniem,
+  SHA-256 66, IP 42; normalizacja do 100% szerokosci
+- DOCX: layout FIXED + nadpisany tblGrid (Word respektuje szerokosci,
+  koniec recznych korekt)
+
+## 2026-10-21 21:10
+### Naprawione
+- Nazwy kontaktow: "Nie znaleziono"/"nieznaleziono" -> "brak danych"
+  (filtr rozszerzony o slowo "znaleziono"; regula generyczna)
+
+## 2026-10-21 21:05
+### Naprawione
+- Etykiety abonentow: w galezi "same dane abonenckie" brakowalo podstawienia
+  numeru — po zmianie obie etykiety z numerem w nawiasie, bez "#1"
+
+## 2026-10-21 20:55
+### Zmienione
+- Krzyzowy: WYCOFANY TXT — zbiorczy = DOCX + XLSX (jednolicie z per numer);
+  generuj_raport_zbiorczy przepisany na czysty XLSX (bez L/CSV);
+  oględziny jednokrotnie z rozmiarem w obu formatach
+### Naprawione
+- DOCX zbiorczy: tabela oględzin 4 kolumny z naglowkiem + styl tabel
+
+## 2026-10-21 20:45
+### Naprawione
+- Zbiorczy: usuniete duplikaty sekcji oględzin (3x -> 1x); folder analizowany
+  raz, nie per numer
+### Dodane
+- Oględziny: kolumna Rozmiar (KB/MB/GB + bajty) przy kazdym pliku
+
+## 2026-10-21 20:35
+### Naprawione
+- Zbiorczy krzyzowy XLSX: usuniety duplikat _wb.save (plik byl zepsuty);
+  pelny test pipeline przechodzi, xlsx otwiera sie poprawnie
+
+## 2026-10-21 20:20
+### Zmienione
+- Naglowki tabel DOCX: wypelnienie D9D9D9 (ciemniejsze niz wiersze F2F2F2)
+- Sekcja BTS DOCX: jednolite z XLSX (adres w kolumnie Adres, kod -> (brak kodu))
+- Pogrubienie TYLKO naglowkow (parametr n_naglowkow; pierwszy wynik normalny)
+
+## 2026-10-21 19:50
+### Zmienione
+- Tabele DOCX: Table Grid (siatka, bez niebieskiego), pogrubione naglowki
+  (Lp i grupowe), szare pasy co drugi wiersz danych od wiersza 2
+  (wywolanie helpera na koncu — po zbudowaniu wszystkich tabel);
+  XLSX: szare pasy co drugi wiersz
+
+## 2026-10-21 19:40
+### Zmienione
+- Sekcja 1: Lp jako pierwsza kolumna (Numer, Abonent za Lp)
+- Kosmetyka naglowka DOCX: tytul 16pt; "Operator: <nazwa operatora>";
+  kazdy wiersz danych osobno; zmniejszone odstepy (2pt po akapicie)
+
+## 2026-10-21 19:30
+### Zmienione
+- Sekcja 1: brak nazwy = "brak danych" (bez "nieustalony", ujednolicone);
+  naglowki kolumn: "Numer" (pelny numer kontaktu) i "Abonent" (nazwa/dane);
+  bez kolumny Lp w wierszu danych
+
+## 2026-10-21 19:20
+### Naprawione
+- Sekcja 1: pelny_numer nie zwraca juz pustego stringa dla nietekstowych
+  identyfikatorow (ING, krotkie numery); polacz_kontakty przywraca scalanie
+  nazw z mapy (suffix _s obslugiwany); klucz mapy szukany po klucz_numer
+  i pelnym numerze
+
+## 2026-10-21 19:15
+### Naprawione
+- Sekcja 1: kolumna Nazwa nie znika przy laczeniu SMS z glosowymi
+  (selektywny merge); wywolania polacz_kontakty z poprawnym parametrem
+
+## 2026-10-21 19:00
+### Dodane
+- Zbiorczy krzyzowy DOCX: sekcje A-D jako tabele (Calibri 10) + oględziny
+  z SHA-256; krzyzowy folder = TXT + DOCX + XLSX
+### Naprawione
+- Zbiorczy XLSX: usuniety duplikat naglowka oględzin
+### Zmienione
+- Diagnostyka: traceback przy bledach raportow + "[!!] Folder bez rekordu"
+
+## 2026-10-21 18:55
+### Dodane
+- Diagnostyka brakujacych raportow per numer: pelny traceback przy bledzie +
+  podsumowanie "[!] Pominięto N raportow" + komunikaty "[!!] Folder bez rekordu"
+  przy wczytywaniu (latwo zobaczyc co odpada i dlaczego)
+### Naprawione
+- Zbiorczy krzyzowy: sciezka wyjscia .xlsx (byla .csv w komunikacie)
+
+## 2026-10-21 18:45
+### Zmienione
+- Formatowanie: Calibri 10 w DOCX (Normal + Headings/Titile bold) i XLSX
+  (wszystkie komorki; bold naglowkow sekcji zachowany)
+
+## 2026-10-21 18:00
+### Zmienione
+- Oględziny z SHA-256 przeniesione z raportow per numer do raportu ZBIORCZEGO
+  (listing wszystkich folderow abonentow, numeracja ciagla plikow)
+- Sekcja 1: naprawione puste pole Abonent (klucz numeru rzutowany na tekst
+  przed outer-joinem SMS z glosowymi)
+- Nazwy kontaktow: komunikaty operatora ("numer nie obslugiwany przez...",
+  "obsługiwany przez - Orange...") skracane do "brak danych"; pusta nazwa =
+  "nieustalony" (regula generyczna na slowie "obslugiwany")
+
+## 2026-10-21 17:45
+### Zmienione
+- Preambula oględzin w DOCX: naglowek + opis + TABELA plikow z SHA-256
+  (spójna z formatem dokumentu, byle luźne akapity)
+- Sekcja 1: dwupoziomowy naglowek ze scaleniem komórek (DOCX i XLSX):
+  SMS (W|P), Polaczenia (W|P|PR), Razem; "nieustalony" zamiast "brak danych"
+
+## 2026-10-21 17:25
+### Dodane
+- Preambula oględzin z SHA-256 na poczatku kazdego raportu per numer (DOCX i XLSX):
+  listing wszystkich plikow zrodlowych folderu abonenta (*.xls/xlsx/pdf/csv/txt/docx)
+  z sumami kontrolnymi; DOCX: akapity + page break, XLSX: pierwsze wiersze arkusza.
+  Oględzinom poddaje sie cala przesylke — kazdy raport wymienia wszystkie pliki.
+
+## 2026-10-20 15:40
+### Zmienione
+- Numery: normalizacja polskich — 48 odcinane TYLKO gdy wynik to 9 cyfr;
+  zagraniczne (z kierunkowym operatora) i krotkie (SMS specjalne, 4-6 cyfr)
+  bez zmian; w raportach wyswietlane pelne numery z prefixem 48
+  (komorkowe i stacjonarne), zagraniczne i krotkie w oryginale
 
 ## 2026-10-20 15:15
 ### Zmienione

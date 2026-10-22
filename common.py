@@ -87,15 +87,32 @@ def normalizuj_strone(v) -> str:
 
 def klucz_numer(num) -> str:
     """
-    Kanoniczna postac numeru do porownan (klucz w mapach, laczenie billingow).
-    0048xxx / +48xxx / 48xxx -> xxx
+    Klucz do laczenia numerow (wewnetrzny, porownania, grupowanie).
+    Polskie: odcinamy 48 TYLKO gdy wynik to 9 cyfr (pewny numer polski).
+    Numery zagraniczne: bez zmian (operator podaje juz z kierunkowym).
+    Numery krotkie (4-6 cyfr, SMS specjalne): bez zmian.
     """
     n = normalizuj_numer(num)
-    if n.startswith("0048") and len(n) > 10:
+    if n.startswith("0048"):
         n = n[4:]
-    elif n.startswith("48") and len(n) > 9:
-        n = n[2:]
+    if n.startswith("48") and len(n) == 11:
+        n = n[2:]  # polski numer komorkowy lub stacjonarny z kierunkowym
     return n
+
+
+def pelny_numer(num) -> str:
+    """Pelna postac numeru z prefixem 48 (do wyswietlania w raportach).
+    Tylko polskie 9-cyfrowe dostaja 48; zagraniczne, krotkie i nietekstowe
+    identyfikatory (np. 'ING') przechodza bez zmian."""
+    d = normalizuj_numer(num)
+    if not d:
+        return str(num).strip()   # nietekstowe identyfikatory (np. 'ING')
+    if d.startswith("0048"):
+        d = d[4:]
+    if len(d) == 9:
+        d = "48" + d
+    return d
+
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -334,3 +351,150 @@ def dane_abonenta(target, nazwiska_map):
         "adres": dane.get("adres", ""),
         "pesel": dane.get("pesel", ""),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# OGLĘDZINY — LISTING PLIKÓW Z SHA-256
+# ══════════════════════════════════════════════════════════════════════
+
+def _rozmiar_pliku(bajty):
+    if bajty >= 1 << 30:
+        return f"{bajty / (1 << 30):.1f} GB ({bajty} B)"
+    if bajty >= 1 << 20:
+        return f"{bajty / (1 << 20):.1f} MB ({bajty} B)"
+    if bajty >= 1 << 10:
+        return f"{bajty / (1 << 10):.1f} KB ({bajty} B)"
+    return f"{bajty} B"
+
+
+def listing_folderu(folder):
+    """Listing wszystkich plikow zrodlowych w folderze abonenta z suma SHA-256
+    i rozmiarem (B/KB/MB/GB + bajty). Oględzinom poddaje sie cala przesylke —
+    kazdy raport wymienia wszystkie pliki z folderu. Zwraca (nazwa, sha, rozmiar)."""
+    import hashlib
+    rozszerzenia = ('.xls', '.xlsx', '.pdf', '.csv', '.txt', '.docx')
+    pliki = []
+    try:
+        for fn in sorted(os.listdir(folder)):
+            p = os.path.join(folder, fn)
+            if not os.path.isfile(p):
+                continue
+            if not fn.lower().endswith(rozszerzenia):
+                continue
+            h = hashlib.sha256()
+            with open(p, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b''):
+                    h.update(chunk)
+            pliki.append((fn, h.hexdigest(), _rozmiar_pliku(os.path.getsize(p))))
+    except Exception:
+        pass
+    return pliki
+
+
+def preambula_ogledzin(operator_nazwa, cel_txt, okres_od, okres_do,
+                       folder_abonenta, pliki):
+    """Preambula oględzin danych telekomunikacyjnych — lista linii tekstu.
+    Wstawiana przed dotychczasowa trescia raportu (DOCX: akapity + page break;
+    XLSX: pierwsze wiersze arkusza)."""
+    L = []
+    L.append("=" * 100)
+    L.append("  OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH")
+    L.append("=" * 100)
+    L.append(f"  Oględzinom poddano dane telekomunikacyjne dostarczone przez operatora {operator_nazwa}")
+    L.append(f"  dla {cel_txt} za okres od {okres_od} do {okres_do}.")
+    L.append(f"  Dane umieszczono w folderze abonenta '{os.path.basename(folder_abonenta)}'.")
+    L.append("")
+    L.append("  PLIKI ZRODLOWE (listing z sumami kontrolnymi SHA-256):")
+    L.append("  {:>3}  {:<50}  {}".format("Lp", "Plik", "SHA-256"))
+    L.append("  " + "-" * 96)
+    if pliki:
+        for i, (nazwa, sha) in enumerate(pliki, 1):
+            L.append("  {:>3}  {:<50}  {}".format(i, nazwa[:50], sha))
+    else:
+        L.append("  (brak rozpoznawalnych plikow zrodlowych w folderze abonenta)")
+    L.append("")
+    return L
+
+
+# Teksty informacyjne operatora (obsługiwany/nieobsługiwany, nie znaleziono) — skracamy
+_RE_TEKST_OBSLUGI = re.compile(r"obs[lł]ugiwany|znalezion[oy]", re.IGNORECASE)
+
+def czytelna_nazwa(nazwa):
+    """Nazwa kontaktu do wyswietlenia: dane osobowe gdy operator je podaje;
+    komunikat typu 'numer nie obslugiwany przez <siec>' -> 'brak danych';
+    brak nazwy -> 'brak danych' (ujednolicone)."""
+    if nazwa is None:
+        return "brak danych"
+    n = str(nazwa).strip().strip('"')
+    if not n or n.lower() == "nan":
+        return "brak danych"
+    if _RE_TEKST_OBSLUGI.search(n):
+        return "brak danych"
+    return n
+
+
+def preambula_zbiorcza(rekordy):
+    """Oględziny dla raportu zbiorczego: listing WSZYSTKICH folderow abonentow
+    z plikami i SHA-256. Zwraca liste wierszy (kazdy wiersz = lista komorek)
+    gotowa do wstawienia w TXT (join) i XLSX (append)."""
+    L = []
+    L.append(["=" * 100])
+    L.append(["OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH"])
+    L.append(["=" * 100])
+    L.append([f"Oględzinom poddano dane telekomunikacyjne {len(rekordy)} analizowanych abonentow."])
+    L.append([""])
+    seen = set()
+    lp = 1
+    for r in rekordy:
+        folder = r.get("folder")
+        if not folder or folder in seen:
+            continue
+        seen.add(folder)
+        L.append([f"FOLDER: {r.get('operator','')}/{os.path.basename(folder)}"])
+        pliki = listing_folderu(folder)
+        if pliki:
+            L.append(["Lp", "Plik", "SHA-256", "Rozmiar"])
+            for nazwa, sha, roz in pliki:
+                L.append([str(lp), nazwa, sha, roz])
+                lp += 1
+        else:
+            L.append(["(brak rozpoznawalnych plikow zrodlowych w folderze)"])
+        L.append([""])
+    return L
+
+
+# ─────────────────────────────────────────────────────────────────────
+# INTELIGENTNE SZEROKOSCI KOLUMN
+# ─────────────────────────────────────────────────────────────────────
+# Cap = maksymalna szerokosc kolumny w znakach, wg naglowka kolumny.
+# Kolumny liczbowe/daty waskie; tekst (nazwy/adresy) zawija sie w komorce.
+CAPY_KOLUMN = {
+    "lp": 6, "w": 5, "p": 5, "pr": 5, "razem": 8,
+    "wychodzace": 11, "przychodzace": 11,
+    "sms": 8, "polaczenia": 12, "dane kontaktu": 20,
+    "od": 11, "do": 11, "okres od": 11, "okres do": 11, "zakres czasu": 24,
+    "data": 12, "czas": 9,
+    "numer": 15, "numer telefonu": 15, "numer kontaktu": 15,
+    "numer abonenta": 13, "numer drugiego abonenta": 13, "numer (msisdn)": 13,
+    "abonent": 35, "nazwa": 35, "nazwa / firma": 35, "nazwa kontaktu": 35,
+    "adres": 40, "adres stacji": 40,
+    "kod bts": 13, "inicjujace": 11, "odbierajace": 11, "liczba polaczen": 12,
+    "imei": 17, "imei (baza 14 cyfr)": 17, "imsi": 17,
+    "adres ip": 42, "ip": 42,
+    "liczba zdarzen": 12, "liczba sesji": 10, "liczba abonentow": 12,
+    "czas wych": 15, "czas przych": 15, "laczny czas": 15,
+    "sha-256": 66, "rozmiar": 20, "plik": 55,
+    "operator": 13, "folder abonenta": 28,
+    "pesel/regon": 13, "pesel/nip-krs": 14, "pesel/nip od": 14, "pesel/nip do": 14,
+    "voice przych": 10, "voice wych": 10,
+    "proby przych": 10, "proby wych": 10,
+    "sms przych": 10, "sms wych": 10,
+    "fwd przych": 10, "fwd wych": 10, "dane": 7, "data_": 7,
+    "ta sama osoba/firma": 10, "z innymi": 9, "z kontakt.": 10,
+    "zd.z kont.": 11, "zdarzen z kontaktem": 14,
+    "status": 10, "zrodlo": 40,
+}
+
+def cap_kolumny(naglowek) -> int:
+    """Cap szerokosci kolumny w znakach, na podstawie tekstu naglowka."""
+    return CAPY_KOLUMN.get(str(naglowek).strip().lower(), 30)

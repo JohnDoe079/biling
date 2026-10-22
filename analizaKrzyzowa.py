@@ -34,7 +34,7 @@ from common import (
     skanuj_dane, klucz_numer, normalizuj_numer, fmt_czas, input_path,
     klucz_imei,
     dane_abonenta, okres_bilingow, BLANK, NIE_IMEI, _clean_counts,
-)
+    pelny_numer)
 from operators import orange, tmobile, plus, play
 from operators.base import BrakParsaraError
 import analizaBilling as ab
@@ -134,6 +134,8 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
                     "data", "czas", "czas_trwania", "typ", "strona_a", "bts_a", "imei_a",
                     "imsi_a", "strona_b", "bts_b", "imei_b", "imsi_b"])
                 numer = klucz_numer(msisdn_dane)
+                if len(zestawy) > 1 and numer:
+                    etykieta = f"{abonent} ({numer})"
                 rekordy.append({
                     "operator": operator, "abonent": etykieta, "numer": numer,
                     "identyfikator": (dane_mapa.get(numer, {}) or {}).get("pesel", ""),
@@ -254,6 +256,13 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
             r2["abonent"] = r2["zrodla"][0]
             print(f"    [scalono] {r2['numer']}: {len(r2['zrodla'])} zrodel -> {r2['abonent']}")
     rekordy = [scalone[k] for k in kolejnosc]
+    # diagnostyka: folder vs rekordy (nie kazdy folder musi dac rekord — log ponizej)
+    _foldery_z_rek = {r["folder"] for r in rekordy}
+    for poz in skan:
+        if poz["folder"] not in _foldery_z_rek:
+            print(f"    [!!] Folder bez rekordu: {poz['operator']}/{poz['abonent']} — sprawdz pliki w folderze")
+        elif not any(r["folder"] == poz["folder"] and r["numer"] for r in rekordy):
+            print(f"    [!!] Folder z rekordami bez numeru: {poz['operator']}/{poz['abonent']}")
     for r in rekordy:
         if not r["df"].empty:
             r["okres_od"], r["okres_do"] = okres_bilingow(r["df"])
@@ -427,135 +436,134 @@ def wspolne_imei(rekordy):
 # RAPORT ZBIORCZY (TXT + CSV)
 # ══════════════════════════════════════════════════════════════════════
 
-def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, out_csv):
-    L = []
-    L.append("=" * 120)
-    L.append("  RAPORT ZBIORCZY — ANALIZA KRZYZOWA BILINGOW")
-    L.append(f"  Wygenerowano: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    L.append(f"  Abonentow: {len(rekordy)}")
-    L.append("=" * 120)
-    L.append("")
-
-    # liczniki zdarzen KRZYZOWYCH per abonent (nie suma calego billingu)
+def generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, outpath, ogl=None):
+    """Raport zbiorczy krzyzowy w DOCX — sekcje A-D jako tabele, Calibri 10."""
+    try:
+        from docx import Document
+        from docx.shared import Pt
+    except ImportError:
+        print("[!] Brak 'python-docx' — zbiorczy DOCX pominiety.")
+        return False
+    from common import pelny_numer, fmt_czas
+    doc = Document()
+    st = doc.styles['Normal']
+    st.font.name = 'Calibri'
+    st.font.size = Pt(10)
+    for hs in ('Heading 1', 'Heading 2', 'Title'):
+        try:
+            h = doc.styles[hs]
+            h.font.name = 'Calibri'
+            h.font.bold = True
+        except KeyError:
+            pass
+    doc.add_heading("ANALIZA KRZYZOWA BILINGOW", 0)
+    if ogl:
+        doc.add_heading("OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH", 1)
+        t = doc.add_table(rows=0, cols=4)
+        t.style = "Table Grid"
+        for w in ogl:
+            if w and w[0] and str(w[0]).startswith("="):
+                continue
+            if w and len(w) >= 3 and w[0] == "Lp":
+                c = t.add_row().cells
+                c[0].text, c[1].text, c[2].text, c[3].text = "Lp", "Plik", "SHA-256", "Rozmiar"
+                for cc in c:
+                    for r_ in cc.paragraphs[0].runs:
+                        r_.bold = True
+                continue
+            if w and str(w[0]).startswith("FOLDER:"):
+                doc.add_paragraph(w[0])
+                continue
+            if w and len(w) >= 2 and w[0] and str(w[0]).isdigit():
+                c = t.add_row().cells
+                c[0].text, c[1].text = str(w[0]), str(w[1])
+                c[2].text = str(w[2]) if len(w) > 2 else ""
+                c[3].text = str(w[3]) if len(w) > 3 else ""
+                continue
+            if w and str(w[0]).strip():
+                doc.add_paragraph(str(w[0]))
+    # SEKCJA A
     dir_cnt, sha_cnt = {}, {}
-    if not bezposrednia.empty:
+    if bezposrednia is not None and not bezposrednia.empty:
         for _, rr in bezposrednia.iterrows():
             dir_cnt[rr["abonent"]] = dir_cnt.get(rr["abonent"], 0) + int(rr["razem"])
-    if not wspolne.empty:
+    if wspolne is not None and not wspolne.empty:
         for _, rr in wspolne.iterrows():
             sha_cnt[rr["abonent"]] = sha_cnt.get(rr["abonent"], 0) + int(rr["razem"])
-
-    # SEKCJA A — abonenci
-    L.append("-" * 130)
-    L.append("  SEKCJA A: ANALIZOWANI ABONENCI — liczniki zdarzen KRZYZOWYCH")
-    L.append("-" * 130)
-    L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8} {:>10}".format(
-        "Lp", "Folder abonenta", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator",
-        "Okres od", "Okres do", "Z innymi", "Z kontakt."))
-    L.append("-" * 130)
-    for i, r in enumerate(rekordy, 1):
-        num = r["numer"]
-        L.append("  {:>3} {:<28} {:<14} {:<18} {:<10} {:<12} {:<12} {:>8} {:>10}".format(
-            i, r["abonent"][:28], num or "-", r.get("identyfikator", "")[:18],
-            r["operator"], r["okres_od"], r["okres_do"],
-            dir_cnt.get(num, 0), sha_cnt.get(num, 0)))
-    L.append("")
-    L.append("  'Z innymi'   = zdarzenia z innymi ANALIZOWANYMI abonentami (sekcja B)")
-    L.append("  'Z kontakt.' = zdarzenia ze wspolnymi kontaktami osob trzecich (sekcja C)")
-    L.append("")
-
-    # SEKCJA B — bezposrednia
-    L.append("-" * 110)
-    L.append("  SEKCJA B: KOMUNIKACJA BEZPOSREDNIA MIEDZY ANALIZOWANYMI ABONENTAMI")
-    L.append("-" * 110)
-    if not bezposrednia.empty:
-        akt_num = None
-        lp = 0
-        for _, r in bezposrednia.iterrows():
-            klucz_pary = tuple(sorted([str(r["abonent"]), str(r["numer_kontaktu"])]))
-            if klucz_pary != akt_num:
-                akt_num = klucz_pary
-                lp += 1
-                n_ab = 0
-                oso = ""
-                for _, rr in bezposrednia.iterrows():
-                    if tuple(sorted([str(rr["abonent"]), str(rr["numer_kontaktu"])])) == klucz_pary:
-                        n_ab += 1
-                        if rr.get("ta_sama_osoba"):
-                            oso = "  [TA SAMA OSOBA/FIRMA]"
-                L.append("")
-                L.append(f"  #{lp} POLACZENIE BEZPOSREDNIE: {klucz_pary[0]} <-> {klucz_pary[1]}{oso}")
-                L.append("  " + "-" * 126)
-                L.append("  {:<14} {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
-                    "Numer", "Drugi numer", "Okres", "Razem", "Vprz", "Vwych", "Pprz", "Pwych",
-                    "Sprz", "Swych", "Fprz", "Fwych", "DATA", ""))
-            L.append("  {:<14} {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
-                str(r["abonent"])[:14], str(r["numer_kontaktu"])[:14],
-                f'{r["okres_od"]} - {r["okres_do"]}'[:23],
-                r["razem"], r["voice_przych"], r["voice_wych"],
-                r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                r["fwd_przych"], r["fwd_wych"], r["dane"], ""))
-        L.append("")
-        L.append("  Legenda: Vprz/Vwych - polaczenia przychodzace/wychodzace, "
-                 "Pprz/Pwych - proby, Sprz/Swych - SMS/MMS, Fprz/Fwych - przekierowania (FWD), DATA - transmisje.")
+    doc.add_heading("SEKCJA A: ANALIZOWANI ABONENCI — liczniki zdarzen KRZYZOWYCH", 1)
+    ta = doc.add_table(rows=1, cols=8)
+    ta.style = "Light Grid Accent 1"
+    for i2, h in enumerate(["Lp", "Folder abonenta", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator",
+                            "Okres od", "Okres do", "Z innymi / Z kontakt."]):
+        ta.rows[0].cells[i2].text = h
+    for lp, r in enumerate(rekordy, 1):
+        c = ta.add_row().cells
+        c[0].text = str(lp)
+        c[1].text = r["abonent"]
+        c[2].text = pelny_numer(r["numer"]) if r["numer"] else "-"
+        c[3].text = r.get("identyfikator", "") or "-"
+        c[4].text = r["operator"]
+        c[5].text = r["okres_od"] or "-"
+        c[6].text = r["okres_do"] or "-"
+        c[7].text = f"{dir_cnt.get(r['numer'], 0)} / {sha_cnt.get(r['numer'], 0)}"
+    # SEKCJA B
+    doc.add_heading("SEKCJA B: KOMUNIKACJA BEZPOSREDNIA MIEDZY ANALIZOWANYMI ABONENTAMI", 1)
+    if bezposrednia is not None and not bezposrednia.empty:
+        tb = doc.add_table(rows=1, cols=6)
+        tb.style = "Light Grid Accent 1"
+        for i2, h in enumerate(["Numer abonenta", "Numer drugiego", "Razem", "Voice P/W",
+                                "Proby P/W", "SMS P/W + FWD P/W"]):
+            tb.rows[0].cells[i2].text = h
+        for _, rr in bezposrednia.iterrows():
+            c = tb.add_row().cells
+            c[0].text = pelny_numer(rr["abonent"])
+            c[1].text = pelny_numer(rr["numer_kontaktu"])
+            c[2].text = str(rr["razem"])
+            c[3].text = f'{rr["voice_przych"]}/{rr["voice_wych"]}'
+            c[4].text = f'{rr["proby_przych"]}/{rr["proby_wych"]}'
+            c[5].text = (f'SMS {rr["sms_przych"]}/{rr["sms_wych"]}; '
+                         f'FWD {rr.get("fwd_przych", 0)}/{rr.get("fwd_wych", 0)}')
     else:
-        L.append("  Brak bezposredniej komunikacji miedzy analizowanymi abonentami.")
-    L.append("")
-
-    # SEKCJA C — wspolne kontakty (z rozbiciem per abonent)
-    L.append("-" * 130)
-    L.append("  SEKCJA C: OSOBY TRZECIE LACZACE ABONENTOW (wspolne kontakty) — szczegoly")
-    L.append("-" * 130)
-    if not wspolne.empty:
-        akt_num = None
-        lp = 0
-        for _, r in wspolne.iterrows():
-            if r["numer_kontaktu"] != akt_num:
-                akt_num = r["numer_kontaktu"]
-                lp += 1
-                nazwa = f"  ({r['nazwa_kontaktu']})" if r["nazwa_kontaktu"] else ""
-                n_ab = int((wspolne["numer_kontaktu"] == akt_num).sum())
-                L.append("")
-                L.append(f"  #{lp} WSPOLNY KONTAKT: {akt_num}{nazwa} — laczy {n_ab} abonentow")
-                L.append("  " + "-" * 126)
-                L.append("  {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
-                    "Numer abonenta", "Okres", "Zd.z kont.", "Vprz", "Vwych", "Pprz", "Pwych",
-                    "Sprz", "Swych", "Fprz", "Fwych", "DATA", ""))
-            L.append("  {:<14} {:<23} {:>9} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>5}".format(
-                str(r["abonent"])[:14],
-                f'{r["okres_od"]} - {r["okres_do"]}'[:23],
-                r["razem"], r["voice_przych"], r["voice_wych"],
-                r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                r["fwd_przych"], r["fwd_wych"], r["dane"], ""))
-        L.append("")
-        L.append("  Legenda: Zd.z kont. = WSZYSTKIE zdarzenia abonenta z TYM kontaktem (nie caly billing);")
-        L.append("  Vprz/Vwych - polaczenia przychodzace/wychodzace, Pprz/Pwych - proby, Fprz/Fwych - FWD,")
-        L.append("  Sprz/Swych - SMS/MMS, DATA - transmisje danych.")
+        doc.add_paragraph("Brak bezposredniej komunikacji miedzy analizowanymi abonentami.")
+    # SEKCJA C
+    doc.add_heading("SEKCJA C: OSOBY TRZECIE LACZACE ABONENTOW (wspolne kontakty)", 1)
+    if wspolne is not None and not wspolne.empty:
+        tc = doc.add_table(rows=1, cols=4)
+        tc.style = "Light Grid Accent 1"
+        for i2, h in enumerate(["Numer kontaktu", "Nazwa", "Numer abonenta", "Zdarzen / typy"]):
+            tc.rows[0].cells[i2].text = h
+        for _, rr in wspolne.iterrows():
+            c = tc.add_row().cells
+            c[0].text = pelny_numer(rr["numer_kontaktu"])
+            c[1].text = str(rr.get("nazwa_kontaktu", ""))
+            c[2].text = pelny_numer(rr["abonent"])
+            c[3].text = (f'{rr["razem"]} (V {rr["voice_przych"]}/{rr["voice_wych"]}, '
+                         f'P {rr["proby_przych"]}/{rr["proby_wych"]}, '
+                         f'SMS {rr["sms_przych"]}/{rr["sms_wych"]})')
     else:
-        L.append("  Brak wspolnych kontaktow osob trzecich.")
-    L.append("")
-
-    # SEKCJA D — wspolne IMEI
-    L.append("-" * 110)
-    L.append("  SEKCJA D: URZADZENIA (IMEI) WSPOLNE DLA WIECEJ NIZ JEDNEGO ABONENTA")
-    L.append("-" * 110)
-    if not imei_df.empty:
-        L.append("  {:>3} {:<18} {:>3}  {:<70}".format("Lp", "IMEI", "Ab.", "Abonenci"))
-        L.append("-" * 110)
-        for i, (_, r) in enumerate(imei_df.iterrows(), 1):
-            L.append("  {:>3} {:<18} {:>3}  {:<70}".format(
-                i, r["imei"], r["liczba_abonentow"], r["abonenci"][:70]))
+        doc.add_paragraph("Brak wspolnych kontaktow osob trzecich.")
+    # SEKCJA D
+    doc.add_heading("SEKCJA D: URZADZENIA (IMEI) WSPOLNE DLA WIECEJ NIZ JEDNEGO ABONENTA", 1)
+    if imei_df is not None and not imei_df.empty:
+        td = doc.add_table(rows=1, cols=3)
+        td.style = "Light Grid Accent 1"
+        for i2, h in enumerate(["IMEI (baza 14 cyfr)", "Liczba abonentow", "Abonenci"]):
+            td.rows[0].cells[i2].text = h
+        for _, rr in imei_df.iterrows():
+            c = td.add_row().cells
+            c[0].text = str(rr["imei"])
+            c[1].text = str(rr["liczba_abonentow"])
+            c[2].text = str(rr["abonenci"])
     else:
-        L.append("  Brak wspolnych urzadzen.")
-    L.append("")
-    L.append("=" * 120)
-    L.append("  KONIEC RAPORTU ZBIORCZEGO")
-    L.append("=" * 120)
+        doc.add_paragraph("Brak wspolnych urzadzen (IMEI).")
+    for _t in doc.tables:
+        ab._styl_tabeli(_t, n_naglowkow=1)
+    doc.save(outpath)
+    return True
 
-    with open(out_txt, "w", encoding="utf-8") as f:
-        f.write("\n".join(L))
 
-    # XLSX (zamiast CSV)
+def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, out_csv, ogl=None):
+    """Raport zbiorczy krzyzowy — XLSX (TXT wycofany). Sekcje A-D + oględziny."""
     from openpyxl import Workbook as _WB
     from openpyxl.styles import Font as _Font, PatternFill as _Fill
     _wb = _WB()
@@ -568,69 +576,100 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         _ws.append(list(row))
 
     _wr(["ANALIZA KRZYZOWA BILINGOW"])
-    _wr([])
-    _wr(["ABONENCI — liczniki zdarzen KRZYZOWYCH"])
-    _wr(["Folder", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator", "Okres od", "Okres do",
-                "Zdarzen z innymi abonentami", "Zdarzen ze wspolnymi kontaktami"])
-    for r in rekordy:
-        num = r["numer"]
-        _wr([r["abonent"], num, r.get("identyfikator", ""), r["operator"],
-                    r["okres_od"], r["okres_do"],
-                    dir_cnt.get(num, 0), sha_cnt.get(num, 0)])
-    _wr([])
-    _wr(["KOMUNIKACJA BEZPOSREDNIA — szczegoly per abonent"])
-    _wr(["Numer abonenta", "Numer drugiego abonenta",
-                "Razem zdarzen", "Voice przych", "Voice wych",
-                "Proby przych", "Proby wych", "SMS przych", "SMS wych",
-                "FWD przych", "FWD wych", "DATA",
-                "Okres od", "Okres do", "Ta sama osoba/firma"])
+    # OGLĘDZINY — jednokrotnie, listing folderow z SHA-256 i rozmiarem
+    if ogl:
+        for w in ogl:
+            _wr(w)
+        _wr([""])
+
+    # liczniki zdarzen KRZYZOWYCH per abonent
+    dir_cnt, sha_cnt = {}, {}
     if not bezposrednia.empty:
-        for _, r in bezposrednia.iterrows():
-            _wr([r["abonent"], r["numer_kontaktu"],
-                        r["razem"], r["voice_przych"], r["voice_wych"],
-                        r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                        r["fwd_przych"], r["fwd_wych"], r["dane"],
-                        r["okres_od"], r["okres_do"], r.get("ta_sama_osoba", "")])
-    _wr([])
-    _wr(["WSPOLNE KONTAKTY OSOB TRZECICH — szczegoly per abonent"])
-    _wr(["Numer kontaktu", "Nazwa kontaktu", "Numer abonenta",
-                "Zdarzen z kontaktem", "Voice przych", "Voice wych",
-                "Proby przych", "Proby wych", "SMS przych", "SMS wych",
-                "FWD przych", "FWD wych", "DATA",
-                "Okres od", "Okres do"])
+        for _, rr in bezposrednia.iterrows():
+            dir_cnt[rr["abonent"]] = dir_cnt.get(rr["abonent"], 0) + int(rr["razem"])
     if not wspolne.empty:
+        for _, rr in wspolne.iterrows():
+            sha_cnt[rr["abonent"]] = sha_cnt.get(rr["abonent"], 0) + int(rr["razem"])
+
+    # SEKCJA A
+    _wr(["SEKCJA A: ANALIZOWANI ABONENCI — liczniki zdarzen KRZYZOWYCH"])
+    _wr(["Lp", "Folder abonenta", "Numer (MSISDN)", "PESEL/NIP-KRS", "Operator",
+         "Okres od", "Okres do", "Z innymi", "Z kontakt."])
+    for lp, r in enumerate(rekordy, 1):
+        _wr([lp, r["abonent"], r["numer"] or "-", r.get("identyfikator", "") or "-",
+             r["operator"], r["okres_od"], r["okres_do"],
+             dir_cnt.get(r["numer"], 0), sha_cnt.get(r["numer"], 0)])
+    _wr([""])
+
+    # SEKCJA B
+    _wr(["SEKCJA B: KOMUNIKACJA BEZPOSREDNIA MIEDZY ANALIZOWANYMI ABONENTAMI"])
+    if not bezposrednia.empty:
+        _wr(["Numer abonenta", "Numer drugiego abonenta", "Razem zdarzen", "Voice przych",
+             "Voice wych", "Proby przych", "Proby wych", "SMS przych", "SMS wych",
+             "FWD przych", "FWD wych", "DATA", "Okres od", "Okres do"])
+        for _, r in bezposrednia.iterrows():
+            _wr([r["abonent"], r["numer_kontaktu"], r["razem"], r["voice_przych"], r["voice_wych"],
+                 r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
+                 r.get("fwd_przych", 0), r.get("fwd_wych", 0), r["dane"],
+                 r["okres_od"], r["okres_do"]])
+    else:
+        _wr(["Brak bezposredniej komunikacji miedzy analizowanymi abonentami."])
+    _wr([""])
+
+    # SEKCJA C
+    _wr(["SEKCJA C: OSOBY TRZECIE LACZACE ABONENTOW (wspolne kontakty)"])
+    if not wspolne.empty:
+        _wr(["Numer kontaktu", "Nazwa kontaktu", "Numer abonenta", "Zdarzen z kontaktem",
+             "Voice przych", "Voice wych", "Proby przych", "Proby wych", "SMS przych", "SMS wych",
+             "FWD przych", "FWD wych", "DATA", "Okres od", "Okres do"])
         for _, r in wspolne.iterrows():
-            _wr([r["numer_kontaktu"], r["nazwa_kontaktu"], r["abonent"],
-                        r["razem"], r["voice_przych"], r["voice_wych"],
-                        r["proby_przych"], r["proby_wych"], r["sms_przych"], r["sms_wych"],
-                        r["fwd_przych"], r["fwd_wych"], r["dane"],
-                        r["okres_od"], r["okres_do"]])
-    _wr([])
-    _wr(["WSPOLNE IMEI"])
-    _wr(["IMEI", "Liczba abonentow", "Abonenci"])
+            _wr([r["numer_kontaktu"], r["nazwa_kontaktu"], r["abonent"], r["razem"],
+                 r["voice_przych"], r["voice_wych"], r["proby_przych"], r["proby_wych"],
+                 r["sms_przych"], r["sms_wych"], r.get("fwd_przych", 0), r.get("fwd_wych", 0),
+                 r["dane"], r["okres_od"], r["okres_do"]])
+    else:
+        _wr(["Brak wspolnych kontaktow osob trzecich."])
+    _wr([""])
+
+    # SEKCJA D
+    _wr(["SEKCJA D: URZADZENIA (IMEI) WSPOLNE DLA WIECEJ NIZ JEDNEGO ABONENTA"])
     if not imei_df.empty:
+        _wr(["IMEI", "Liczba abonentow", "Abonenci"])
         for _, r in imei_df.iterrows():
             _wr([r["imei"], r["liczba_abonentow"], r["abonenci"]])
+    else:
+        _wr(["Brak wspolnych urzadzen."])
+    _wr([""])
 
-    _bold = _Font(bold=True)
+    from openpyxl.styles import Font as _CalF
+    for _row in _ws.iter_rows():
+        for _c in _row:
+            _c.font = _CalF(name='Calibri', size=10, bold=_c.font.bold)
+    _bold = _Font(name='Calibri', size=10, bold=True)
     _fill = _Fill("solid", fgColor="DDDDDD")
-    _sekcja = ("SEKCJA", "RAPORT", "ABONENCI", "KOMUNIKACJA", "WSPOLNE", "WSPOLNY", "POLACZENIE",
-           "ANALIZA", "#", "IMEI")
+    _sekcja = ("SEKCJA", "RAPORT", "ABONENCI", "KOMUNIKACJA", "WSPOLNE", "WSPOLNY",
+               "ANALIZA", "#", "IMEI", "OGLĘDZINY", "FOLDER:")
     for _row in _ws.iter_rows():
         _v = _row[0].value
         if isinstance(_v, str) and _v.startswith(_sekcja):
             for _c in _row:
                 _c.font = _bold
                 _c.fill = _fill
+    from common import cap_kolumny as _ck
+    _hdr = {}
     for _col in _ws.columns:
+        _lit = _col[0].column_letter
+        _h = next((str(c.value) for c in _col[:8]
+                   if c.value is not None and str(c.value).strip() and
+                   not str(c.value).startswith(("SEKCJA", "=", "ANALIZA", "OGL"))), "")
+        _hdr[_lit] = _ck(_h)
+    for _col in _ws.columns:
+        _lit = _col[0].column_letter
         _szer = max((len(str(_c.value)) for _c in _col if _c.value is not None), default=8)
-        _ws.column_dimensions[_col[0].column_letter].width = min(max(_szer + 2, 8), 70)
-    _wb.save(out_csv)
+        _ws.column_dimensions[_lit].width = min(max(_szer + 2, 6), _hdr.get(_lit, 30))
     _wb.save(out_csv)
 
-# ══════════════════════════════════════════════════════════════════════
-# RAPORTY PER NUMER (klasyczne, z analizaBilling)
-# ══════════════════════════════════════════════════════════════════════
+
 
 def raport_per_numer(r, outdir):
     """Generuje klasyczny raport dla jednego abonenta (bez wypisywania na ekran)."""
@@ -642,6 +681,8 @@ def raport_per_numer(r, outdir):
     nazwiska_map, historia = r["nazwiska_map"], r["historia"]
     bts_map = r["bts_map"]
     abonent_info = dane_abonenta(target, nazwiska_map)
+    _op = OPERATORZY.get(r.get("operator", ""), {})
+    info_nazwa = _op.get("nazwa", r.get("operator", ""))
     od, do = r["okres_od"], r["okres_do"]
 
     kp = ab.kontakty_zdarzenia(df, target, nazwiska_map)
@@ -664,10 +705,12 @@ def raport_per_numer(r, outdir):
     os.makedirs(target_dir, exist_ok=True)
     p_docx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
     ab.generuj_raport_docx(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_docx,
-                           historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df)
+                           historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df,
+                           operator_nazwa=info_nazwa)
     p_xlsx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.xlsx")
     ab.generuj_raport_csv(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_xlsx,
-                          historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df)
+                          historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df,
+                          )
     print(f"    raport: {p_docx}")
 
 
@@ -694,21 +737,33 @@ def przebieg(root: str, outdir: str = None, bez_per_numer: bool = False):
     krzyz_dir = os.path.join(outdir, "krzyzowy")
     os.makedirs(krzyz_dir, exist_ok=True)
 
+    pominięte = []
     if not bez_per_numer:
         print("\n[+] Raporty per numer:")
         for r in rekordy:
             try:
                 raport_per_numer(r, outdir)
             except Exception as e:
+                import traceback
+                traceback.print_exc()
+                pominięte.append((r['abonent'], str(e)))
                 print(f"    [!] {r['abonent']}: blad raportu: {e}")
+    if pominięte:
+        print(f"[!] Pominięto {len(pominięte)} raportow per numer:")
+        for ab_n, err in pominięte:
+            print(f"    - {ab_n}: {err}")
 
     bezposrednia = komunikacja_bezposrednia(rekordy)
     wspolne = wspolne_kontakty(rekordy)
     imei_df = wspolne_imei(rekordy)
 
-    out_txt = os.path.join(krzyz_dir, "RAPORT_ZBIORCZY_KRZYZOWY.txt")
-    out_csv = os.path.join(krzyz_dir, "RAPORT_ZBIORCZY_KRZYZOWY.csv")
-    generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, out_csv)
+    from common import preambula_zbiorcza
+    ogl_zb = preambula_zbiorcza(rekordy)
+    out_docx = os.path.join(krzyz_dir, "RAPORT_ZBIORCZY_KRZYZOWY.docx")
+    generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, out_docx, ogl=ogl_zb)
+    out_csv = os.path.join(krzyz_dir, "RAPORT_ZBIORCZY_KRZYZOWY.xlsx")
+    generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, None, out_csv,
+                            ogl=ogl_zb)
 
     print("\n" + "=" * 100)
     print("  PODSUMOWANIE ANALIZY KRZYZOWEJ")
@@ -719,9 +774,9 @@ def przebieg(root: str, outdir: str = None, bez_per_numer: bool = False):
     print(f"  Wspolnych kontaktow osob trzecich: {n_wspolnych} numerow ({len(wspolne)} powiazan)")
     print(f"  Wspolnych urzadzen (IMEI): {len(imei_df)}")
     print("=" * 100)
-    print(f"\n[+] RAPORTY PER NUMER:   {os.path.abspath(outdir)}")
-    print(f"[+] RAPORT ZBIORCZY TXT: {os.path.abspath(out_txt)}")
-    print(f"[+] RAPORT ZBIORCZY CSV: {os.path.abspath(out_csv)}")
+    print(f"\n[+] RAPORTY PER NUMER:    {os.path.abspath(outdir)}")
+    print(f"[+] RAPORT ZBIORCZY DOCX: {os.path.abspath(out_docx)}")
+    print(f"[+] RAPORT ZBIORCZY XLSX: {os.path.abspath(out_csv)}")
 
 
 def main():
