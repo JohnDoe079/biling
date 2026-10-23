@@ -157,6 +157,14 @@ def skanuj_dane(root: str, verbose: bool = True):
         for poziom2 in sorted(os.listdir(folder_op)):
             folder_ab = os.path.join(folder_op, poziom2)
             if not os.path.isdir(folder_ab):
+                # plik .zip bezposrednio w folderze operatora = przesylka abonenta
+                if poziom2.lower().endswith(".zip"):
+                    znalezione.append({
+                        "operator": operator,
+                        "abonent": os.path.splitext(poziom2)[0],
+                        "folder": folder_ab,
+                        "is_zip": True,
+                    })
                 continue
             abonent = poziom2.strip()
             znalezione.append({
@@ -372,10 +380,23 @@ def listing_folderu(folder):
     i rozmiarem (B/KB/MB/GB + bajty). Oględzinom poddaje sie cala przesylke —
     kazdy raport wymienia wszystkie pliki z folderu. Zwraca (nazwa, sha, rozmiar)."""
     import hashlib
-    rozszerzenia = ('.xls', '.xlsx', '.pdf', '.csv', '.txt', '.docx')
+    rozszerzenia = ('.xls', '.xlsx', '.pdf', '.csv', '.txt', '.docx', '.zip')
     pliki = []
+    if os.path.isfile(folder):
+        # abonent = sam plik .zip — listing zawiera tylko jego
+        if folder.lower().endswith('.zip'):
+            import hashlib as _h
+            hh = _h.sha256()
+            with open(folder, 'rb') as _f:
+                for _chunk in iter(lambda: _f.read(8192), b''):
+                    hh.update(_chunk)
+            pliki.append((os.path.basename(folder), hh.hexdigest(),
+                          _rozmiar_pliku(os.path.getsize(folder))))
+        return pliki
     try:
-        for fn in sorted(os.listdir(folder)):
+        # ZIPy na poczatku listy — najpierw przesylka, potem jej zawartosc
+        for fn in sorted(os.listdir(folder),
+                         key=lambda x: (not x.lower().endswith('.zip'), x.lower())):
             p = os.path.join(folder, fn)
             if not os.path.isfile(p):
                 continue
@@ -433,41 +454,81 @@ def czytelna_nazwa(nazwa):
     return n
 
 
-def preambula_zbiorcza(rekordy):
-    """Oględziny dla raportu zbiorczego: listing WSZYSTKICH folderow abonentow
-    z plikami i SHA-256. Zwraca liste wierszy (kazdy wiersz = lista komorek)
-    gotowa do wstawienia w TXT (join) i XLSX (append)."""
-    L = []
-    L.append(["=" * 100])
-    L.append(["OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH"])
-    L.append(["=" * 100])
-    L.append([f"Oględzinom poddano dane telekomunikacyjne {len(rekordy)} analizowanych abonentow."])
-    L.append([""])
+NAZWY_OPERATOROW = {
+    "orange": "Orange Polska", "tmobile": "T-Mobile Polska",
+    "plus": "Plus (Polkomtel)", "play": "Play (P4)",
+}
+
+
+def preambula_zbiorcza(rekordy, zrodla=None):
+    """Oględziny dla raportu zbiorczego — STRUKTURA BLOKOWA:
+    zrodla: pelna lista folderow/plikow ze skanu (rowniez takich, ktore
+    nie daly rekordow — np. pusta przesylka; domyslnie tylko rekordy.
+      {"typ": "naglowek", "tekst": ...}
+      {"typ": "opis", "tekst": ...}
+      {"typ": "tabela", "naglowek": [...], "wiersze": [[...], ...]}
+    Wiele ZIPow: jedno zdanie ('...plik A od operatora X oraz plik B od operatora Y'),
+    wspolna tabela plikow, 'Następnie pliki rozpakowano...' + wspolna tabela zawartosci.
+    Foldery bez ZIPow: blok FOLDER jak dotychczas."""
+    L = [{"typ": "naglowek", "tekst": "OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH"}]
     seen = set()
-    lp = 1
-    for r in rekordy:
+    zipy = []      # (nazwa, operator, sciezka, sha, rozmiar)
+    foldery = []   # (op_short, operator, folder, pliki)
+    _iter = zrodla if zrodla is not None else rekordy
+    for r in _iter:
         folder = r.get("folder")
         if not folder or folder in seen:
             continue
         seen.add(folder)
-        L.append([f"FOLDER: {r.get('operator','')}/{os.path.basename(folder)}"])
+        operator = NAZWY_OPERATOROW.get(r.get("operator", ""), r.get("operator", ""))
         pliki = listing_folderu(folder)
-        if pliki:
-            L.append(["Lp", "Plik", "SHA-256", "Rozmiar"])
-            for nazwa, sha, roz in pliki:
-                L.append([str(lp), nazwa, sha, roz])
-                lp += 1
+        z = [p for p in pliki if p[0].lower().endswith(".zip")]
+        if os.path.isfile(folder) and z:
+            nazwa, sha, roz = z[0]
+            zipy.append((nazwa, operator, folder, sha, roz))
         else:
-            L.append(["(brak rozpoznawalnych plikow zrodlowych w folderze)"])
-        L.append([""])
+            foldery.append((r.get("operator", ""), operator, folder, pliki))
+
+    lp = 1
+    if zipy:
+        if len(zipy) == 1:
+            tekst = (f"Oględzinom poddano plik {zipy[0][0]} dostarczony "
+                     f"przez operatora {zipy[0][1]}.")
+        else:
+            czesci = [f"plik {n} dostarczony przez operatora {o}" for n, o, *_ in zipy]
+            tekst = "Oględzinom poddano " + " oraz ".join(czesci) + "."
+        L.append({"typ": "opis", "tekst": tekst})
+        L.append({"typ": "tabela", "naglowek": ["Lp", "Plik", "SHA-256", "Rozmiar"],
+                  "wiersze": [[str(lp + k), n, sh, rz] for k, (n, _o, _p, sh, rz) in enumerate(zipy)]})
+        lp += len(zipy)
+        L.append({"typ": "opis", "tekst": "Następnie pliki rozpakowano."})
+        for _n, _o, zp, _sh, _rz in zipy:
+            tresc = listing_zip_tresc(zp)
+            if not tresc:
+                continue
+            L.append({"typ": "opis",
+                      "tekst": f"Z pliku {_n} uzyskano następujące pliki:"})
+            L.append({"typ": "tabela", "naglowek": ["Lp", "Plik", "SHA-256", "Rozmiar"],
+                      "wiersze": [[str(lp + k), n2, s2, r2]
+                                  for k, (n2, s2, r2) in enumerate(tresc)]})
+            lp += len(tresc)
+        L.append({"typ": "opis", "tekst": ""})
+
+    for op_f, operator, folder, pliki in foldery:
+        L.append({"typ": "opis",
+                  "tekst": f"FOLDER: {op_f}/{os.path.basename(folder)} (operator: {operator})"})
+        if pliki:
+            L.append({"typ": "tabela", "naglowek": ["Lp", "Plik", "SHA-256", "Rozmiar"],
+                      "wiersze": [[str(lp + k), n, sh, rz] for k, (n, sh, rz) in enumerate(pliki)]})
+            lp += len(pliki)
+        else:
+            L.append({"typ": "opis",
+                      "tekst": "(brak rozpoznawalnych plikow zrodlowych w folderze)"})
+        L.append({"typ": "opis", "tekst": ""})
     return L
 
 
-# ─────────────────────────────────────────────────────────────────────
-# INTELIGENTNE SZEROKOSCI KOLUMN
-# ─────────────────────────────────────────────────────────────────────
-# Cap = maksymalna szerokosc kolumny w znakach, wg naglowka kolumny.
-# Kolumny liczbowe/daty waskie; tekst (nazwy/adresy) zawija sie w komorce.
+
 CAPY_KOLUMN = {
     "lp": 6, "w": 5, "p": 5, "pr": 5, "razem": 8,
     "wychodzace": 11, "przychodzace": 11,
@@ -495,6 +556,72 @@ CAPY_KOLUMN = {
     "status": 10, "zrodlo": 40,
 }
 
+
 def cap_kolumny(naglowek) -> int:
     """Cap szerokosci kolumny w znakach, na podstawie tekstu naglowka."""
     return CAPY_KOLUMN.get(str(naglowek).strip().lower(), 30)
+
+
+def rozpakuj_zipy(folder):
+    """Rozpakowuje wszystkie .zip z folderu abonenta do katalogow TYMCZASOWYCH
+    (tempfile, poza input/ — nic nie zostaje w folderze operatora).
+    Zwraca liste (sciezka_zip, katalog_temp). Katalogi kasuje wywolujacy
+    (shutil.rmtree). Zawartosc ZIPow przechodzi przez zwykla analize."""
+    import glob
+    import shutil
+    import tempfile
+    import zipfile
+    wynik = []
+    if os.path.isfile(folder):
+        # folder to w istocie plik .zip (abonent = przesylka)
+        zipy = [folder] if folder.lower().endswith(".zip") else []
+    else:
+        zipy = sorted(glob.glob(os.path.join(folder, "*.zip")))
+    for zp in zipy:
+        tmp = tempfile.mkdtemp(prefix="biling_")
+        try:
+            with zipfile.ZipFile(zp) as zf:
+                # zabezpieczenie przed zip-slip
+                if any(os.path.isabs(m) or ".." in m.replace("\\", "/").split("/")
+                       for m in zf.namelist()):
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    continue
+                zf.extractall(tmp)
+            wynik.append((zp, tmp))
+        except zipfile.BadZipFile:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            shutil.rmtree(tmp, ignore_errors=True)
+    return wynik
+
+
+def listing_zip_tresc(zip_path):
+    """Listing zawartosci ZIPa z SHA-256 i rozmiarem kazdego pliku (rekurencyjnie).
+    Rozpakowanie do temp, sprzatanie po sobie. Zwraca (nazwa_wzgledna, sha, rozmiar)."""
+    import hashlib
+    import shutil
+    import tempfile
+    import zipfile
+    wynik = []
+    tmp = tempfile.mkdtemp(prefix="biling_")
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            if any(os.path.isabs(m) or ".." in m.replace("\\", "/").split("/")
+                   for m in zf.namelist()):
+                shutil.rmtree(tmp, ignore_errors=True)
+                return []
+            zf.extractall(tmp)
+        for root, dirs, files in os.walk(tmp):
+            for fn in sorted(files):
+                p = os.path.join(root, fn)
+                rel = os.path.relpath(p, tmp)
+                h = hashlib.sha256()
+                with open(p, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        h.update(chunk)
+                wynik.append((rel, h.hexdigest(), _rozmiar_pliku(os.path.getsize(p))))
+    except Exception:
+        pass
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return wynik

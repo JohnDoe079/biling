@@ -52,6 +52,98 @@ OPERATORZY = {
 # ANALIZA
 # ══════════════════════════════════════════════════════════════════════
 
+
+
+def buduj_bloki(df, target, wpisy, okres_od, okres_do, nazwiska_map, bts_map,
+                historia_kontaktow=None):
+    """Podzial raportu na okresy wg ZMIAN ABONENTA.
+    KLUCZ = NAZWA: ten sam abonent w wielu wpisach = jedna analiza jak dotychczas.
+    Wpisy-placeholder operatora ("numer nie obsługiwany...") POMIJANE przy podziale.
+    Rozne nazwy = osobne bloki; zakresy wyrownane: do = dzien przed startem
+    kolejnej osoby (brak luk — zadne zdarzenie nie ginie; brak nakladania)."""
+    if not wpisy:
+        return None
+    from common import czytelna_nazwa as _czn
+    wpisy_real = [w for w in wpisy if _czn(w.get("nazwa", "")) != "brak danych"]
+    if not wpisy_real:
+        return None
+    grupy = {}
+    for w in wpisy_real:
+        nazwa = (w.get("nazwa") or "").strip() or "(brak danych)"
+        grupy.setdefault(nazwa, []).append(w)
+    if len(grupy) <= 1:
+        return None
+    bloki = []
+    for nazwa, wps in grupy.items():
+        ods = [w.get("data_akt") for w in wps if w.get("data_akt")]
+        dos = [w.get("data_dezakt") for w in wps if w.get("data_dezakt")]
+        bloki.append({
+            "nazwa": nazwa,
+            "pesel": next((w.get("pesel", "") for w in wps if w.get("pesel")), ""),
+            "od": min(ods) if ods else okres_od,
+            "do": max(dos) if dos else okres_do,
+        })
+    bloki.sort(key=lambda b: b["od"])
+    from datetime import datetime, timedelta
+    for k in range(len(bloki) - 1):
+        # zakres dochodzi do dnia przed startem kolejnej osoby: brak luk i nakladan
+        nast = bloki[k + 1]["od"]
+        granica = (datetime.strptime(nast, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        if granica < bloki[k]["od"]:
+            granica = bloki[k]["od"]
+        bloki[k]["do"] = min(bloki[k]["do"], granica) if bloki[k]["do"] >= bloki[k]["od"] else bloki[k]["do"]
+        bloki[k]["do"] = max(bloki[k]["do"], bloki[k]["od"])
+    out = []
+    for i2, b in enumerate(bloki):
+        od, do = b["od"], b["do"]
+        df_okres = df[(df["data"] >= od) & (df["data"] <= do)]
+        naglowek = (f"ABONENT {i2+1}: {b['nazwa']} | PESEL: {b['pesel'] or '-'} | "
+                    f"okres: {od} - {do}")
+        hk_okres = None
+        if historia_kontaktow:
+            hk_okres = {n: [w for w in lst
+                            if (w.get("data_akt", "") or "0000-00-00") <= do and
+                               (w.get("data_dezakt", "") or "9999-99-99") >= od]
+                        for n, lst in historia_kontaktow.items()}
+            hk_okres = {n: l for n, l in hk_okres.items() if l}
+        out.append({
+            'naglowek': naglowek,
+            'kp': kontakty_zdarzenia(df_okres, target, nazwiska_map),
+            'ks': kontakty_sms(df_okres, target, nazwiska_map),
+            'bts': bts_polaczone(df_okres, target, bts_map),
+            'imei': imei_dla_numeru(df_okres, target, nazwiska_map, b['nazwa']),
+            'imsi': imsi_dla_numeru(df_okres, target),
+            'ip': ip_dla_numeru(df_okres, target),
+            'inet': internet_stats(df_okres, target),
+            'abonent': {"nazwa": b['nazwa'], "adres": "", "pesel": b['pesel']},
+            'od': od, 'do': do,
+            'historia_kontaktow': hk_okres,
+        })
+    # zdarzenia spoza okresow zidentyfikowanych abonentow (luki) — osobny blok,
+    # zeby nic nie zginelo z raportu
+    daty_pok = set()
+    for b in out:
+        daty_pok.update(df[(df["data"] >= b['od']) & (df["data"] <= b['do'])]["data"])
+    df_reszta = df[~df["data"].isin(daty_pok)]
+    if not df_reszta.empty:
+        od_r, do_r = df_reszta["data"].min(), df_reszta["data"].max()
+        out.append({
+            'naglowek': (f"ZDARZENIA Z OKRESOW BEZ ZIDENTYFIKOWANEGO ABONENTA | "
+                         f"okres: {od_r} - {do_r}"),
+            'kp': kontakty_zdarzenia(df_reszta, target, nazwiska_map),
+            'ks': kontakty_sms(df_reszta, target, nazwiska_map),
+            'bts': bts_polaczone(df_reszta, target, bts_map),
+            'imei': imei_dla_numeru(df_reszta, target, nazwiska_map, ''),
+            'imsi': imsi_dla_numeru(df_reszta, target),
+            'ip': ip_dla_numeru(df_reszta, target),
+            'inet': internet_stats(df_reszta, target),
+            'abonent': {"nazwa": "", "adres": "", "pesel": ""},
+            'od': od_r, 'do': do_r,
+            'historia_kontaktow': None,
+        })
+    return out
+
+
 def kontakty_zdarzenia(df, target, nazwiska_map=None):
     voice = df[df["typ"] == "VOICE"]
     proba = df[df["typ"] == "PRÓBA"]
@@ -131,7 +223,7 @@ def bts_polaczone(df, target, bts_map=None):
     out = out.sort_values("inicjujace", ascending=False).reset_index(drop=True)
     return out
 
-def imei_dla_numeru(df, target, nazwiska_map=None):
+def imei_dla_numeru(df, target, nazwiska_map=None, nazwa_glowna=None):
     """Urzadzenia (IMEI) przy numerze — z oznaczeniem, kto uzywal urzadzenia.
     Kolumna 'abonent': imie i nazwisko / firma ABONENTA analizowanego numeru
     albo numer + nazwa osoby, ktorej to urzadzenie (kontrahenta).
@@ -154,8 +246,8 @@ def imei_dla_numeru(df, target, nazwiska_map=None):
     licz = {}
     for im in wlasne:
         licz[im] = licz.get(im, 0) + 1
-    nazwa_ab = ""
-    if nazwiska_map:
+    nazwa_ab = nazwa_glowna or ""
+    if not nazwa_ab and nazwiska_map:
         nazwa_ab = (nazwiska_map.get(target, {}) or {}).get("nazwa", "")
     abonent = {im: (nazwa_ab or "(glowny)") for im in licz}
     if not obce.empty:
@@ -795,8 +887,8 @@ def najczestszy_numer(df):
 
 
 def zgadnij_operatora_folderu(folder: str):
-    """Zgaduje operatora po zawartosci folderu (pdf -> orange, xls -> plus)."""
-    xls = glob.glob(os.path.join(folder, "*.xls*"))
+    """Zgaduje operatora po zawartosci folderu (pdf -> orange, xls/zip -> plus)."""
+    xls = glob.glob(os.path.join(folder, "*.xls*")) + glob.glob(os.path.join(folder, "*.zip"))
     pdfs = glob.glob(os.path.join(folder, "*.pdf"))
     if xls and not pdfs:
         return "plus"
@@ -808,12 +900,26 @@ def zgadnij_operatora_folderu(folder: str):
 def pliki_z_folderu(operator_key: str, folder: str):
     """
     Tryb reczny: wszystkie zestawy danego operatora w folderze scalone w JEDEN
-    zestaw (wykaz + transmisja + nazwiska + bts). Zwraca (df, msisdn, nazwiska_map, historia, bts_map).
+    zestaw (wykaz + transmisja + nazwiska + bts) — rowniez z ZIPow (rozpakowanie
+    do katalogu tymczasowego, sprzatane po analizie). Zwraca (df, msisdn, nazwiska_map, historia, bts_map).
     """
+    import glob as _glob
+    import shutil as _shutil
     import pandas as pd
     info = OPERATORZY[operator_key]
     mod = info["modul"]
-    ds = mod.datasets(folder) if hasattr(mod, "datasets") else []
+    ds = list(mod.datasets(folder)) if hasattr(mod, "datasets") else []
+    from common import rozpakuj_zipy as _rz
+    for _zp, _tmp in _rz(folder):
+        try:
+            # rekurencyjnie: ZIP operatora zwykle zawiera PODFOLDER z danymi
+            _ds = []
+            for _root, _dirs, _files in os.walk(_tmp):
+                _ds += list(mod.datasets(_root)) if hasattr(mod, "datasets") else []
+        except Exception:
+            _ds = []
+        ds = ds + _ds
+        _shutil.rmtree(_tmp, ignore_errors=True)
     if not ds:
         return None, None, {}, {}, {}
     ramki, msisdn, msisdn_dane = [], None, None
@@ -941,62 +1047,9 @@ def uruchom(operator_key, plik, numer, outdir, plik_nazwiska=None, plik_bts=None
             do = wpis.get("data_dezakt", "")
             wpis["stats"] = stats_dla_okresu(df, target, od, do)
 
-    # --- PODZIAŁ NA BLOKI PER ABONENT (jeśli >1 zmiana) ---
-    bloki = None
-    if historia_abonentow and target in historia_abonentow and len(historia_abonentow[target]) >= 1:
-        wpisy = historia_abonentow[target]
-        bloki = []
-        for i, wpis in enumerate(wpisy):
-            od = wpis.get("data_akt") or okres_od
-            if i < len(wpisy) - 1:
-                nast_akt = wpisy[i + 1].get("data_akt")
-                dezakt = wpis.get("data_dezakt")
-                if dezakt and dezakt < nast_akt:
-                    # Luka między dezaktywacją a następnym abonentem — przypisujemy do tego abonenta
-                    do = (datetime.strptime(nast_akt, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-                else:
-                    if dezakt:
-                        do = dezakt
-                    else:
-                        do = (datetime.strptime(nast_akt, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-            else:
-                # Ostatni abonent: od aktywacji do końca billingów (ignoruj dezaktywację)
-                do = okres_do
-
-            mask = (df["data"] >= od) & (df["data"] <= do)
-            df_okres = df[mask]
-
-            kp_okres = kontakty_zdarzenia(df_okres, target, nazwiska_map)
-            ks_okres = kontakty_sms(df_okres, target, nazwiska_map)
-            bts_okres = bts_polaczone(df_okres, target, bts_map)
-            imei_okres = imei_dla_numeru(df_okres, target)
-            inet_okres = internet_stats(df_okres, target)
-
-            abonent_okres = {
-                "nazwa": wpis.get("nazwa", ""),
-                "adres": wpis.get("adres", ""),
-                "pesel": wpis.get("pesel", ""),
-            }
-
-            hk_okres = {}
-            if historia_kontaktow:
-                nums = pd.concat([kp_okres['numer_kontaktu'], ks_okres['numer_kontaktu']]).unique()
-                for numer in nums:
-                    n = normalizuj_numer(str(numer))
-                    if n in historia_kontaktow:
-                        hk_okres[n] = historia_kontaktow[n]
-
-            naglowek = f"OKRES {i+1}: {od} – {do} | Abonent: {abonent_okres['nazwa'] or '(brak danych)'} | PESEL/REGON: {abonent_okres['pesel'] or '-'}"
-            if abonent_okres['adres']:
-                naglowek += f" | Adres: {abonent_okres['adres']}"
-
-            bloki.append({
-                'naglowek': naglowek,
-                'kp': kp_okres, 'ks': ks_okres, 'bts': bts_okres,
-                'imei': imei_okres, 'inet': inet_okres,
-                'abonent': abonent_okres, 'od': od, 'do': do,
-                'historia_kontaktow': hk_okres
-            })
+    historia_lista = historia.get(klucz_numer(numer)) or historia.get(numer) or []
+    bloki = buduj_bloki(df, numer, historia_lista, okres_od, okres_do,
+                        nazwiska_map, bts_map, historia_kontaktow or None)
 
     target_dir = os.path.join(outdir, target)
     os.makedirs(target_dir, exist_ok=True)
@@ -1209,108 +1262,118 @@ def generuj_raport_docx(target, kp, ks, bts, imei_df, abonent, inet, okres_od, o
                     f"{w.get('data_akt', '')} - {w.get('data_dezakt', '') or 'obecnie'}: "
                     f"{w.get('nazwa', '')} | PESEL: {w.get('pesel', '') or '-'}", style="List Bullet 2")
 
-    doc.add_heading("SEKCJA 1: POLACZENIA (W - wychodzace, P - przychodzace, PR - proby)", 1)
-    km = polacz_kontakty(kp, ks, None)
-    if km is not None and not km.empty:
-        # naglowek dwupoziomowy ze scaleniem: [Lp|Abonent|Nazwa] + SMS(W|P) + Polaczenia(W|P|PR) + Razem
-        t = doc.add_table(rows=2, cols=9)
-        t.style = "Table Grid"
-        g1 = t.rows[0].cells
-        g1[1].merge(g1[2]).text = "Dane kontaktu"  # Numer+Abonent
-        g1[3].merge(g1[4]).text = "SMS"           # SMS: W|P
-        g1[5].merge(g1[6]).merge(g1[7]).text = "Polaczenia"  # W|P|PR
-        # g1[8] = Razem (bez scalania)
-        h2 = t.rows[1].cells
-        for i, h in enumerate(["Lp", "Numer", "Abonent", "W", "P", "W", "P", "PR", "Razem"]):
-            h2[i].text = h
-        for lp, (_, r) in enumerate(km.iterrows(), 1):
-            c = t.add_row().cells
-            c[0].text = str(lp)
-            c[1].text = pelny_numer(r.get("numer_kontaktu", ""))
-            c[2].text = str(r.get("nazwa_kontaktu", "") or "brak danych")
-            c[3].text = str(int(r.get("sms_wychodzace", 0)))
-            c[4].text = str(int(r.get("sms_przychodzace", 0)))
-            c[5].text = str(int(r.get("voice_wychodzace", 0)))
-            c[6].text = str(int(r.get("voice_przychodzace", 0)))
-            c[7].text = str(int(r.get("proba_razem", 0)))
-            c[8].text = str(int(r.get("razem", 0)))
-    else:
-        doc.add_paragraph("Brak zdarzen w tym okresie.")
+    if bloki is None:
+        bloki = [{'naglowek': None, 'kp': kp, 'ks': ks, 'bts': bts, 'imei': imei_df,
+                  'imsi': imsi_df, 'ip': ip_df, 'inet': inet}]
+    for _blok in bloki:
+        kp = _blok['kp']; ks = _blok.get('ks'); bts = _blok.get('bts')
+        imei_df = _blok.get('imei'); imsi_df = _blok.get('imsi')
+        ip_df = _blok.get('ip'); inet = _blok.get('inet')
+        if _blok.get('naglowek'):
+            doc.add_heading(_blok['naglowek'], 2)
+        doc.add_heading("SEKCJA 1: POLACZENIA (W - wychodzace, P - przychodzace, PR - proby)", 1)
+        km = polacz_kontakty(kp, ks, None)
+        if km is not None and not km.empty:
+            # naglowek dwupoziomowy ze scaleniem: [Lp|Abonent|Nazwa] + SMS(W|P) + Polaczenia(W|P|PR) + Razem
+            t = doc.add_table(rows=2, cols=9)
+            t.style = "Table Grid"
+            g1 = t.rows[0].cells
+            g1[1].merge(g1[2]).text = "Dane kontaktu"  # Numer+Abonent
+            g1[3].merge(g1[4]).text = "SMS"           # SMS: W|P
+            g1[5].merge(g1[6]).merge(g1[7]).text = "Polaczenia"  # W|P|PR
+            # g1[8] = Razem (bez scalania)
+            h2 = t.rows[1].cells
+            for i, h in enumerate(["Lp", "Numer", "Abonent", "W", "P", "W", "P", "PR", "Razem"]):
+                h2[i].text = h
+            for lp, (_, r) in enumerate(km.iterrows(), 1):
+                c = t.add_row().cells
+                c[0].text = str(lp)
+                c[1].text = pelny_numer(r.get("numer_kontaktu", ""))
+                c[2].text = str(r.get("nazwa_kontaktu", "") or "brak danych")
+                c[3].text = str(int(r.get("sms_wychodzace", 0)))
+                c[4].text = str(int(r.get("sms_przychodzace", 0)))
+                c[5].text = str(int(r.get("voice_wychodzace", 0)))
+                c[6].text = str(int(r.get("voice_przychodzace", 0)))
+                c[7].text = str(int(r.get("proba_razem", 0)))
+                c[8].text = str(int(r.get("razem", 0)))
+        else:
+            doc.add_paragraph("Brak zdarzen w tym okresie.")
 
-    doc.add_heading("SEKCJA 2: TRANSMISJA DANYCH (INTERNET)", 1)
-    if inet:
-        doc.add_paragraph(
-            f"Laczna liczba sesji: {inet.get('razem', 0)} | "
-            f"Laczny czas: {fmt_czas(inet.get('czas_s', 0))}")
-        if ip_df is not None and not ip_df.empty:
-            doc.add_paragraph("Adresy IP (od najczesciej przyznawanych):")
+        doc.add_heading("SEKCJA 2: TRANSMISJA DANYCH (INTERNET)", 1)
+        if inet:
+            doc.add_paragraph(
+                f"Laczna liczba sesji: {inet.get('razem', 0)} | "
+                f"Laczny czas: {fmt_czas(inet.get('czas_s', 0))}")
+            if ip_df is not None and not ip_df.empty:
+                doc.add_paragraph("Adresy IP (od najczesciej przyznawanych):")
+                t = doc.add_table(rows=1, cols=5)
+                t.style = "Table Grid"
+                t.rows[0].cells[0].text = "Lp"
+                t.rows[0].cells[1].text = "Adres IP"
+                t.rows[0].cells[2].text = "Liczba sesji"
+                t.rows[0].cells[3].text = "Od"
+                t.rows[0].cells[4].text = "Do"
+                for _lp, (_, r) in enumerate(ip_df.iterrows(), 1):
+                    c = t.add_row().cells
+                    c[0].text = str(_lp)
+                    c[1].text = str(r["ip"])
+                    c[2].text = str(r["liczba_sesji"])
+                    c[3].text = str(r.get("okres_od", ""))
+                    c[4].text = str(r.get("okres_do", ""))
+        else:
+            doc.add_paragraph("Brak zdarzen transmisji danych.")
+
+        doc.add_heading("SEKCJA 3: STACJE BAZOWE (BTS)", 1)
+        if bts is not None and not bts.empty:
             t = doc.add_table(rows=1, cols=5)
             t.style = "Table Grid"
-            t.rows[0].cells[0].text = "Lp"
-            t.rows[0].cells[1].text = "Adres IP"
-            t.rows[0].cells[2].text = "Liczba sesji"
-            t.rows[0].cells[3].text = "Od"
-            t.rows[0].cells[4].text = "Do"
-            for _lp, (_, r) in enumerate(ip_df.iterrows(), 1):
+            for i, h in enumerate(["Lp", "Kod BTS", "Adres", "Wychodzace", "Przychodzace"]):
+                t.rows[0].cells[i].text = h
+            for lp, (_, r) in enumerate(bts.iterrows(), 1):
                 c = t.add_row().cells
-                c[0].text = str(_lp)
-                c[1].text = str(r["ip"])
-                c[2].text = str(r["liczba_sesji"])
-                c[3].text = str(r.get("okres_od", ""))
-                c[4].text = str(r.get("okres_do", ""))
-    else:
-        doc.add_paragraph("Brak zdarzen transmisji danych.")
+                kod = str(r.get("bts", ""))
+                adres = str(r.get("adres", ""))
+                if not adres and ' ' in kod:
+                    adres = kod
+                c[0].text = str(lp)
+                c[1].text = kod if ' ' not in kod else "(brak kodu)"
+                c[2].text = adres or "(brak danych)"
+                c[3].text = str(r.get("inicjujace", ""))
+                c[4].text = str(r.get("odbierajace", ""))
+        else:
+            doc.add_paragraph("Brak danych BTS.")
 
-    doc.add_heading("SEKCJA 3: STACJE BAZOWE (BTS)", 1)
-    if bts is not None and not bts.empty:
-        t = doc.add_table(rows=1, cols=5)
-        t.style = "Table Grid"
-        for i, h in enumerate(["Lp", "Kod BTS", "Adres", "Wychodzace", "Przychodzace"]):
-            t.rows[0].cells[i].text = h
-        for lp, (_, r) in enumerate(bts.iterrows(), 1):
-            c = t.add_row().cells
-            kod = str(r.get("bts", ""))
-            adres = str(r.get("adres", ""))
-            if not adres and ' ' in kod:
-                adres = kod
-            c[0].text = str(lp)
-            c[1].text = kod if ' ' not in kod else "(brak kodu)"
-            c[2].text = adres or "(brak danych)"
-            c[3].text = str(r.get("inicjujace", ""))
-            c[4].text = str(r.get("odbierajace", ""))
-    else:
-        doc.add_paragraph("Brak danych BTS.")
+        doc.add_heading("SEKCJA 4: URZADZENIA (IMEI)", 1)
+        if imei_df is not None and not imei_df.empty:
+            t = doc.add_table(rows=1, cols=4)
+            t.style = "Table Grid"
+            for i, h in enumerate(["Lp", "IMEI (baza 14 cyfr)", "Liczba zdarzen", "Abonent"]):
+                t.rows[0].cells[i].text = h
+            for lp, (_, r) in enumerate(imei_df.iterrows(), 1):
+                c = t.add_row().cells
+                c[0].text = str(lp)
+                c[1].text = str(r["imei"])
+                c[2].text = str(r["liczba_zdarzen"])
+                c[3].text = str(r.get("abonent", ""))
+        else:
+            doc.add_paragraph("Brak danych IMEI.")
 
-    doc.add_heading("SEKCJA 4: URZADZENIA (IMEI)", 1)
-    if imei_df is not None and not imei_df.empty:
-        t = doc.add_table(rows=1, cols=4)
-        t.style = "Table Grid"
-        for i, h in enumerate(["Lp", "IMEI (baza 14 cyfr)", "Liczba zdarzen", "Abonent"]):
-            t.rows[0].cells[i].text = h
-        for lp, (_, r) in enumerate(imei_df.iterrows(), 1):
-            c = t.add_row().cells
-            c[0].text = str(lp)
-            c[1].text = str(r["imei"])
-            c[2].text = str(r["liczba_zdarzen"])
-            c[3].text = str(r.get("abonent", ""))
-    else:
-        doc.add_paragraph("Brak danych IMEI.")
+        doc.add_heading("SEKCJA 5: KARTY SIM (IMSI)", 1)
+        if imsi_df is not None and not imsi_df.empty:
+            t = doc.add_table(rows=1, cols=3)
+            t.style = "Table Grid"
+            for i, h in enumerate(["Lp", "IMSI", "Liczba zdarzen"]):
+                t.rows[0].cells[i].text = h
+            for lp, (_, r) in enumerate(imsi_df.iterrows(), 1):
+                c = t.add_row().cells
+                c[0].text = str(lp)
+                c[1].text = str(r["imsi"])
+                c[2].text = str(r["liczba_zdarzen"])
+            if len(imsi_df) > 1:
+                doc.add_paragraph(f"UWAGA: Wykryto {len(imsi_df)} roznych kart SIM (IMSI) dla numeru {target}.")
+        else:
+            doc.add_paragraph("Brak danych IMSI.")
 
-    doc.add_heading("SEKCJA 5: KARTY SIM (IMSI)", 1)
-    if imsi_df is not None and not imsi_df.empty:
-        t = doc.add_table(rows=1, cols=3)
-        t.style = "Table Grid"
-        for i, h in enumerate(["Lp", "IMSI", "Liczba zdarzen"]):
-            t.rows[0].cells[i].text = h
-        for lp, (_, r) in enumerate(imsi_df.iterrows(), 1):
-            c = t.add_row().cells
-            c[0].text = str(lp)
-            c[1].text = str(r["imsi"])
-            c[2].text = str(r["liczba_zdarzen"])
-        if len(imsi_df) > 1:
-            doc.add_paragraph(f"UWAGA: Wykryto {len(imsi_df)} roznych kart SIM (IMSI) dla numeru {target}.")
-    else:
-        doc.add_paragraph("Brak danych IMSI.")
 
     for _t in doc.tables:
         _n = 2 if (len(_t.rows) > 1 and

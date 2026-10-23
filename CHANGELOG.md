@@ -1,6 +1,118 @@
 # CHANGELOG — Biling Toolkit
 Format wersji: RRRR-MM-DD GG:MM (czas polski)
 
+## 2026-10-23 06:10
+### Dodane
+- Krzyzowy: SEKCJA A2 "ZAPYTANIA BEZ DANYCH" — odpytane zrodla, z ktorych
+  operator nie dostarczyl danych abonenckich (zaden rekord); widoczne
+  obok oględzin z SHA — pelny obraz, co zlecono a co zwrocono
+### Stan obslugi przypadkow pustych
+- numer znany, zero zdarzen: raport per numer generuje sie z pustymi
+  sekcjami; widoczny w sekcji A
+- brak numeru i brak zdarzen: bez raportu per numer, ale SEKCJA A2 +
+  oględziny
+
+## 2026-10-22 13:15
+### Naprawione
+- IMEI w blokach okresowych: etykieta "Abonent" dla urzadzen glownych
+  pobiera nazwe z OKRESU BLOKU (nie z mapy globalnej) — koniec sytuacji
+  "ABONENT 2: NOVAMA" z IMEI opisanym jako "Swistak Jacek";
+  imei_dla_numeru(..., nazwa_glowna=...)
+
+## 2026-10-22 13:05
+### Zmienione
+- buduj_bloki: wpisy-placeholder operatora ("numer nie obsługiwany...")
+  pomijane przy podziale — koniec blokow typu "ABONENT: W zadanym okresie..."
+- zdarzenia spoza okresow zidentyfikowanych abonentow (luki miedzy
+  okresami, ruch po dezaktywacji) trafiaja do bloku "ZDARZENIA Z OKRESOW
+  BEZ ZIDENTYFIKOWANEGO ABONENTA" — nic nie znika z raportu
+
+## 2026-10-22 12:55
+### Zmienione
+- buduj_bloki: klucz podzialu = NAZWA abonenta — ten sam abonent w wielu
+  wpisach/okresach historii = analiza od najstarszego do najnowszego jak
+  dotychczas (bez blokow); rozne nazwy = osobne bloki (od=min akt,
+  do=max dezakt per osoba), okresy nie nakladaja sie
+### Naprawione
+- 5 blokow zamiast 2: kazdy wpis historii byl traktowany jako osobny
+  blok — teraz grupowanie po nazwie (test: 3+2 wpisy = 2 bloki)
+
+## 2026-10-22 12:45
+### Dodane
+- Podzial raportu per numer na OKRESY wg zmian abonenta (mechanizm blokow
+  z v1 Orange, domkniety): 2+ abonentow w okresie = bloki "ABONENT i:
+  nazwa | PESEL | okres: od - do", kazdy z pelnymi sekcjami 1-5 liczonymi
+  TYLKO ze zdarzen z danego okresu; buduj_bloki() wspoldzielone przez
+  uruchom i raport_per_numer; DOCX doczepiony do petli po blokach
+  (XLSX/TXT juz mialy); regresja: 1 abonent = raport bez zmian
+
+## 2026-10-22 12:35
+### Zmienione
+- Oględziny: zamiast jednej wspolnej tabeli zawartosci — per ZIP:
+  "Z pliku X uzyskano następujące pliki:" + tabelka (dla kazdej paczki)
+
+## 2026-10-22 12:25
+### Zmienione
+- Sekcja C: V -> P (polaczenia), P -> PR (proby) w formacie zdarzen
+  i legendzie; oba formaty
+
+## 2026-10-22 12:20
+### Dodane
+- Sekcja C krzyzowa: legenda nad tabela ("V - polaczenia przych/wych,
+  P - proby przych/wych, SMS - SMS/MMS przych/wych") w DOCX i XLSX
+### Naprawione
+- Sekcja C: nazwy kontaktow przez czytelna_nazwa (komunikaty operatora
+  -> "brak danych")
+
+## 2026-10-22 12:15
+### Zmienione
+- Oględziny: usuniety przedrostek "|--" przy plikach zawartosci ZIPa
+
+## 2026-10-22 09:20
+### Zmienione
+- Oględziny: obsluga WIELU paczek ZIP od roznych operatorow — jedno zdanie
+  ("...plik A od operatora X oraz plik B od operatora Y"), wspolna tabela
+  plikow, "Następnie pliki rozpakowano..." + wspolna tabela zawartosci
+- Oględziny obejmuja tez zrodla BEZ rekordow (pusta przesylka tez byla
+  ogladana) — wczytaj_wszystkie zwraca zrodla, preambula_zbiorcza je przyjmuje
+
+## 2026-10-22 09:15
+### Zmienione
+- Oględziny krzyzowe: struktura blokowa (naglowek/opis/tabela) — dla ZIP-a:
+  "Oględzinom poddano plik X dostarczony przez operatora Y" + tabela pliku,
+  "Następnie plik rozpakowano, w wyniku czego uzyskano:" + tabela zawartosci;
+  identycznie w DOCX i XLSX; nazwy operatorow pelne (common.NAZWY_OPERATOROW)
+### Naprawione
+- Przywrocony slownik CAPY_KOLUMN (usuniety przez blad przy podmianie)
+
+## 2026-10-22 09:00
+### Naprawione
+- Oględziny: przywrócone SHA-256 i rozmiary plikow BEDACYCH W ZIP-ie —
+  najpierw ZIP (wlasny SHA/rozmiar), potem jego zawartosc rekurencyjnie,
+  kazdy plik z wlasnym SHA-256 i rozmiarem (listing_zip_tresc, temp+
+  sprzatanie)
+
+## 2026-10-22 08:55
+### Zmienione
+- ZIP: przeszukiwanie rozpakowanej zawartosci REKURENCYJNIE (ZIP operatora
+  zwykle zawiera podfolder z danymi, np. PLUS000134286/*.xls);
+  dziala w trybie krzyzowym i recznym
+
+## 2026-10-22 08:50
+### Dodane
+- ZIP bezposrednio w folderze operatora (input/<operator>/*.zip):
+  traktowany jako abonent-przesylka — rozpakowanie do temp, analiza,
+  oględziny listuja ZIP z SHA-256 i rozmiarem
+
+## 2026-10-21 21:20
+### Dodane
+- Obsluga ZIPow od operatorow: wrzucasz przesylke .zip do folderu abonenta,
+  skrypt rozpakowuje do katalogu TYMCZASOWEGO (tempfile, poza input/),
+  analizuje zawartosc zwykla sciezka, sprzata po sobie (folder abonenta
+  nietkniety); sam ZIP ma SHA-256 + rozmiar w oględzinach, na poczatku listy;
+  zabezpieczenie przed zip-slip; dziala w trybie krzyzowym i recznym;
+  zgadywanie operatora: zip traktowany jak xls (Plus)
+
 ## 2026-10-21 22:05
 ### Zmienione (DOCX)
 - Sekcja 1: Numer wyrównany do LEWEJ (wykluczony z centrowania);

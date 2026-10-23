@@ -87,17 +87,38 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
     rekordy = []
     ramki = []
 
+    zrodla = []
     for poz in skan:
         operator = poz["operator"]
         info = OPERATORZY[operator]
         folder = poz["folder"]
         abonent = poz["abonent"]
+        zrodla.append({"operator": operator, "folder": folder})
 
         try:
             zestawy = info["modul"].datasets(folder)
         except Exception as e:
             print(f"[!] {operator}/{abonent}: blad autodetekcji: {e}")
             continue
+
+        # ZIPy od operatora: rozpakowanie do temp, zawartosc przez zwykla analize
+        import shutil as _shutil
+        from common import rozpakuj_zipy as _rz
+        if '_temp_zipy' not in dir():
+            _temp_zipy = []
+        for _zp, _tmp in _rz(folder):
+            try:
+                # rekurencyjnie: ZIP operatora zwykle zawiera PODFOLDER z danymi
+                _ds = []
+                for _root, _dirs, _files in os.walk(_tmp):
+                    _ds += info["modul"].datasets(_root)
+            except Exception:
+                _ds = []
+            if _ds:
+                zestawy = zestawy + _ds
+                _temp_zipy.append(_tmp)
+            else:
+                _shutil.rmtree(_tmp, ignore_errors=True)
 
         for zi, zestaw in enumerate(zestawy, 1):
             etykieta = abonent if len(zestawy) == 1 else f"{abonent} #{zi}"
@@ -256,6 +277,13 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
             r2["abonent"] = r2["zrodla"][0]
             print(f"    [scalono] {r2['numer']}: {len(r2['zrodla'])} zrodel -> {r2['abonent']}")
     rekordy = [scalone[k] for k in kolejnosc]
+    # sprzatanie katalogow tymczasowych z ZIPow
+    try:
+        for _t in _temp_zipy:
+            _shutil.rmtree(_t, ignore_errors=True)
+    except Exception:
+        pass
+
     # diagnostyka: folder vs rekordy (nie kazdy folder musi dac rekord — log ponizej)
     _foldery_z_rek = {r["folder"] for r in rekordy}
     for poz in skan:
@@ -269,7 +297,7 @@ def wczytaj_wszystkie(root: str, verbose: bool = True):
 
     _ramki = [r["df"] for r in rekordy if not r["df"].empty]
     global_df = pd.concat(_ramki, ignore_index=True) if _ramki else pd.DataFrame()
-    return rekordy, global_df
+    return rekordy, global_df, zrodla
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -393,7 +421,8 @@ def wspolne_kontakty(rekordy):
         if len(per_ab) < 2:
             continue
         dane_kont = mapa_nazw.get(num, {})
-        nazwa = dane_kont.get("nazwa", "")
+        from common import czytelna_nazwa as _cn
+        nazwa = _cn(dane_kont.get("nazwa", ""))
         for label_ab, st in per_ab.items():
             wiersze.append({
                 "numer_kontaktu": num,
@@ -436,7 +465,8 @@ def wspolne_imei(rekordy):
 # RAPORT ZBIORCZY (TXT + CSV)
 # ══════════════════════════════════════════════════════════════════════
 
-def generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, outpath, ogl=None):
+def generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, outpath, ogl=None,
+                                 puste=None):
     """Raport zbiorczy krzyzowy w DOCX — sekcje A-D jako tabele, Calibri 10."""
     try:
         from docx import Document
@@ -458,30 +488,24 @@ def generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, outpat
             pass
     doc.add_heading("ANALIZA KRZYZOWA BILINGOW", 0)
     if ogl:
-        doc.add_heading("OGLĘDZINY DANYCH TELEKOMUNIKACYJNYCH", 1)
-        t = doc.add_table(rows=0, cols=4)
-        t.style = "Table Grid"
-        for w in ogl:
-            if w and w[0] and str(w[0]).startswith("="):
-                continue
-            if w and len(w) >= 3 and w[0] == "Lp":
+        for _b in ogl:
+            if _b["typ"] == "naglowek":
+                doc.add_heading(_b["tekst"], 1)
+            elif _b["typ"] == "opis":
+                if _b["tekst"]:
+                    doc.add_paragraph(_b["tekst"])
+            elif _b["typ"] == "tabela":
+                t = doc.add_table(rows=0, cols=len(_b["naglowek"]))
+                t.style = "Table Grid"
                 c = t.add_row().cells
-                c[0].text, c[1].text, c[2].text, c[3].text = "Lp", "Plik", "SHA-256", "Rozmiar"
-                for cc in c:
-                    for r_ in cc.paragraphs[0].runs:
-                        r_.bold = True
-                continue
-            if w and str(w[0]).startswith("FOLDER:"):
-                doc.add_paragraph(w[0])
-                continue
-            if w and len(w) >= 2 and w[0] and str(w[0]).isdigit():
-                c = t.add_row().cells
-                c[0].text, c[1].text = str(w[0]), str(w[1])
-                c[2].text = str(w[2]) if len(w) > 2 else ""
-                c[3].text = str(w[3]) if len(w) > 3 else ""
-                continue
-            if w and str(w[0]).strip():
-                doc.add_paragraph(str(w[0]))
+                for _k, _h in enumerate(_b["naglowek"]):
+                    c[_k].text = _h
+                for _w2 in _b["wiersze"]:
+                    c = t.add_row().cells
+                    for _k, _v in enumerate(_w2):
+                        if _k < len(c):
+                            c[_k].text = str(_v)
+        doc.add_paragraph("")
     # SEKCJA A
     dir_cnt, sha_cnt = {}, {}
     if bezposrednia is not None and not bezposrednia.empty:
@@ -506,6 +530,18 @@ def generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, outpat
         c[5].text = r["okres_od"] or "-"
         c[6].text = r["okres_do"] or "-"
         c[7].text = f"{dir_cnt.get(r['numer'], 0)} / {sha_cnt.get(r['numer'], 0)}"
+    # SEKCJA A2: zapytania bez danych
+    if puste:
+        doc.add_heading("SEKCJA A2: ZAPYTANIA BEZ DANYCH (operator nie dostarczyl danych abonenckich)", 1)
+        ta = doc.add_table(rows=1, cols=2)
+        ta.style = "Table Grid"
+        ta.rows[0].cells[0].text = "Lp"
+        ta.rows[0].cells[1].text = "Zrodlo"
+        for _i, _z in enumerate(puste, 1):
+            c = ta.add_row().cells
+            c[0].text = str(_i)
+            c[1].text = f"{_z['operator']}/{os.path.basename(_z['folder'])}"
+
     # SEKCJA B
     doc.add_heading("SEKCJA B: KOMUNIKACJA BEZPOSREDNIA MIEDZY ANALIZOWANYMI ABONENTAMI", 1)
     if bezposrednia is not None and not bezposrednia.empty:
@@ -527,6 +563,8 @@ def generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, outpat
         doc.add_paragraph("Brak bezposredniej komunikacji miedzy analizowanymi abonentami.")
     # SEKCJA C
     doc.add_heading("SEKCJA C: OSOBY TRZECIE LACZACE ABONENTOW (wspolne kontakty)", 1)
+    doc.add_paragraph("Legenda: P - polaczenia przychodzace/wychodzace, "
+                      "PR - proby przych/wych, SMS - SMS/MMS przych/wych.")
     if wspolne is not None and not wspolne.empty:
         tc = doc.add_table(rows=1, cols=4)
         tc.style = "Light Grid Accent 1"
@@ -537,8 +575,8 @@ def generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, outpat
             c[0].text = pelny_numer(rr["numer_kontaktu"])
             c[1].text = str(rr.get("nazwa_kontaktu", ""))
             c[2].text = pelny_numer(rr["abonent"])
-            c[3].text = (f'{rr["razem"]} (V {rr["voice_przych"]}/{rr["voice_wych"]}, '
-                         f'P {rr["proby_przych"]}/{rr["proby_wych"]}, '
+            c[3].text = (f'{rr["razem"]} (P {rr["voice_przych"]}/{rr["voice_wych"]}, '
+                         f'PR {rr["proby_przych"]}/{rr["proby_wych"]}, '
                          f'SMS {rr["sms_przych"]}/{rr["sms_wych"]})')
     else:
         doc.add_paragraph("Brak wspolnych kontaktow osob trzecich.")
@@ -562,7 +600,8 @@ def generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, outpat
     return True
 
 
-def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, out_csv, ogl=None):
+def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, out_csv, ogl=None,
+                            puste=None):
     """Raport zbiorczy krzyzowy — XLSX (TXT wycofany). Sekcje A-D + oględziny."""
     from openpyxl import Workbook as _WB
     from openpyxl.styles import Font as _Font, PatternFill as _Fill
@@ -576,10 +615,15 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
         _ws.append(list(row))
 
     _wr(["ANALIZA KRZYZOWA BILINGOW"])
-    # OGLĘDZINY — jednokrotnie, listing folderow z SHA-256 i rozmiarem
+    # OGLĘDZINY — bloki: naglowek/opis/tabela
     if ogl:
-        for w in ogl:
-            _wr(w)
+        for _b in ogl:
+            if _b["typ"] == "tabela":
+                _wr(_b["naglowek"])
+                for _w2 in _b["wiersze"]:
+                    _wr(_w2)
+            else:
+                _wr([_b["tekst"]])
         _wr([""])
 
     # liczniki zdarzen KRZYZOWYCH per abonent
@@ -601,6 +645,14 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
              dir_cnt.get(r["numer"], 0), sha_cnt.get(r["numer"], 0)])
     _wr([""])
 
+    # SEKCJA A2: zapytania bez danych
+    if puste:
+        _wr(["SEKCJA A2: ZAPYTANIA BEZ DANYCH (operator nie dostarczyl danych abonenckich)"])
+        _wr(["Lp", "Zrodlo"])
+        for _i, _z in enumerate(puste, 1):
+            _wr([_i, f"{_z['operator']}/{os.path.basename(_z['folder'])}"])
+        _wr([""])
+
     # SEKCJA B
     _wr(["SEKCJA B: KOMUNIKACJA BEZPOSREDNIA MIEDZY ANALIZOWANYMI ABONENTAMI"])
     if not bezposrednia.empty:
@@ -618,6 +670,8 @@ def generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, out_txt, ou
 
     # SEKCJA C
     _wr(["SEKCJA C: OSOBY TRZECIE LACZACE ABONENTOW (wspolne kontakty)"])
+    _wr(["Legenda: P - polaczenia przychodzace/wychodzace, PR - proby przych/wych, "
+         "SMS - SMS/MMS przych/wych."])
     if not wspolne.empty:
         _wr(["Numer kontaktu", "Nazwa kontaktu", "Numer abonenta", "Zdarzen z kontaktem",
              "Voice przych", "Voice wych", "Proby przych", "Proby wych", "SMS przych", "SMS wych",
@@ -701,15 +755,18 @@ def raport_per_numer(r, outdir):
         if n in historia and len(historia[n]) > 1:
             hk[n] = dedup_historia(historia[n])
 
+    _wpisy = r["historia"].get(target) or r["historia"].get(klucz_numer(target)) or []
+    bloki = ab.buduj_bloki(df, target, _wpisy, od, do, nazwiska_map, bts_map, hk or None)
+
     target_dir = os.path.join(outdir, target)
     os.makedirs(target_dir, exist_ok=True)
     p_docx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.docx")
     ab.generuj_raport_docx(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_docx,
-                           historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df,
+                           historia_ab, hk, bloki=bloki, imsi_df=imsi_df, ip_df=ip_df,
                            operator_nazwa=info_nazwa)
     p_xlsx = os.path.join(target_dir, f"{target}_RAPORT_KONCOWY.xlsx")
     ab.generuj_raport_csv(target, kp, ks, bts, imei_df, abonent_info, inet, od, do, p_xlsx,
-                          historia_ab, hk, bloki=None, imsi_df=imsi_df, ip_df=ip_df,
+                          historia_ab, hk, bloki=bloki, imsi_df=imsi_df, ip_df=ip_df,
                           )
     print(f"    raport: {p_docx}")
 
@@ -728,7 +785,7 @@ def przebieg(root: str, outdir: str = None, bez_per_numer: bool = False):
         print(f"[!] Nie ma takiego katalogu: {root}")
         sys.exit(1)
 
-    rekordy, global_df = wczytaj_wszystkie(root)
+    rekordy, global_df, zrodla = wczytaj_wszystkie(root)
     if not rekordy:
         print("[!] Nie wczytano zadnych danych.")
         sys.exit(1)
@@ -758,12 +815,16 @@ def przebieg(root: str, outdir: str = None, bez_per_numer: bool = False):
     imei_df = wspolne_imei(rekordy)
 
     from common import preambula_zbiorcza
-    ogl_zb = preambula_zbiorcza(rekordy)
+    ogl_zb = preambula_zbiorcza(rekordy, zrodla)
+    # zapytania bez danych (operator nie dostarczyl danych abonenckich)
+    _foldery_z_rekordami = {r["folder"] for r in rekordy}
+    puste = [z for z in zrodla if z["folder"] not in _foldery_z_rekordami]
     out_docx = os.path.join(krzyz_dir, "RAPORT_ZBIORCZY_KRZYZOWY.docx")
-    generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, out_docx, ogl=ogl_zb)
+    generuj_raport_zbiorczy_docx(rekordy, bezposrednia, wspolne, imei_df, out_docx,
+                                 ogl=ogl_zb, puste=puste)
     out_csv = os.path.join(krzyz_dir, "RAPORT_ZBIORCZY_KRZYZOWY.xlsx")
     generuj_raport_zbiorczy(rekordy, bezposrednia, wspolne, imei_df, None, out_csv,
-                            ogl=ogl_zb)
+                            ogl=ogl_zb, puste=puste)
 
     print("\n" + "=" * 100)
     print("  PODSUMOWANIE ANALIZY KRZYZOWEJ")
